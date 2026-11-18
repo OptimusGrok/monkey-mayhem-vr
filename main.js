@@ -1,5 +1,6 @@
 // Monkey Mayhem — Gorilla-Tag-style WebXR jungle for Meta Quest Browser.
 import * as THREE from './vendor/three.module.js';
+import { Reflector } from './vendor/addons/Reflector.js';
 const V3 = THREE.Vector3, Q = THREE.Quaternion, C3 = THREE.Color;
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -407,7 +408,7 @@ const gorillaGeo = (() => {
   for (const sx of [-1, 1]) { head.add(new THREE.BoxGeometry(0.05, 0.05, 0.02), '#ffffff', M4(new V3(0.055 * sx, 0.02, -0.185)), 0); head.add(new THREE.BoxGeometry(0.025, 0.025, 0.02), '#111111', M4(new V3(0.055 * sx, 0.02, -0.195)), 0); }
   head.add(new THREE.BoxGeometry(0.34, 0.06, 0.2), '#ffffff', M4(new V3(0, 0.12, 0.02)), 0.05);
   const hand = new Merger(); hand.add(new THREE.IcosahedronGeometry(HR, 1), '#ffffff', null, 0.05);
-  return { body: body.build(), head: head.build(), hand: hand.build(), arm: new THREE.CylinderGeometry(0.05, 0.06, 1, 6).translate(0, 0.5, 0).rotateX(Math.PI / 2) };
+  return { body: body.build(), head: head.build(), hand: hand.build(), arm: (() => { const g = new THREE.CylinderGeometry(0.05, 0.06, 1, 6).translate(0, 0.5, 0).rotateX(Math.PI / 2); g.setAttribute('color', new THREE.Float32BufferAttribute(new Array(g.attributes.position.count * 3).fill(1), 3)); return g; })() }; // arms need a (white) colour attribute or vertexColors renders them black
 })();
 const LAVA = new C3(0xff4a12);
 function nameSprite(text) {
@@ -931,6 +932,7 @@ function visuals() {
   updateSky(_cp); updateAnimals(t); updateRemotes(now);
   fallMat.uniforms.t.value = t; ffMat.uniforms.t.value = t; mist.position.x = Math.sin(t * 0.03) * 3; mist.position.z = Math.cos(t * 0.025) * 3;
   splash.scale.setScalar(1 + Math.sin(t * 6) * 0.05);
+  updateMirror();
   updateListener(camera); audioTick(DAY.day);
   if (now - uiT > 250) {
     uiT = now; if (COURSE_S.state === 'running') signDirty = wristDirty = hudDirty = true;
@@ -1012,3 +1014,44 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => DESK.keys.delete(e.code));
 addEventListener('blur', () => DESK.keys.clear());
 setMute(false);
+
+
+// ---------- mirror near spawn (Gorilla Tag style): see your own gorilla ----------
+// Built last so the seeded world/animal layout above is unchanged. The local avatar lives on layer 5:
+// the player's camera never sees it (first person), only the mirror's reflection camera does.
+const MIRROR_LAYER = 5, MIRROR_RANGE = 14;
+const MIRROR = { c: new V3(-5.2, 0, 0.6), w: 2.2, h: 2.4, bottom: 0.25 };
+{
+  const gy = terrainH(MIRROR.c.x, MIRROR.c.z); MIRROR.c.y = gy;
+  const fr = new Merger(), cx = MIRROR.c.x, cz = MIRROR.c.z, y0 = gy + MIRROR.bottom, y1 = y0 + MIRROR.h, hw = MIRROR.w / 2 + 0.12;
+  const A = (y, z) => new V3(cx - 0.05, y, cz + z);
+  const logs = [[A(gy - 0.1, -hw), A(y1 + 0.25, -hw), 0.13], [A(gy - 0.1, hw), A(y1 + 0.25, hw), 0.13], [A(y1 + 0.12, -hw - 0.25), A(y1 + 0.12, hw + 0.25), 0.12], [A(y0 - 0.1, -hw), A(y0 - 0.1, hw), 0.1]];
+  for (const [a, b, r] of logs) { cylAB(fr, a, b, r, r * 0.9, '#8b5a33', 6, 0); capColl(a, b, r, 'mirrorframe'); } // frame logs are climbable like branches
+  fr.add(new THREE.BoxGeometry(0.06, MIRROR.h + 0.1, MIRROR.w + 0.1), '#3a2a1c', M4(new V3(cx - 0.09, y0 + MIRROR.h / 2, cz)), 0);
+  for (const z of [-hw, hw]) fr.add(new THREE.IcosahedronGeometry(0.45, 0), '#4fbf3f', M4(new V3(cx - 0.05, y1 + 0.3, cz + z), null, new V3(1, 0.6, 1)), 0);
+  fr.add(new THREE.IcosahedronGeometry(0.35, 0), '#ffe135', M4(new V3(cx - 0.05, y1 + 0.42, cz), null, new V3(1.2, 0.5, 0.5)), 0);
+  const frame = new THREE.Mesh(fr.build(), worldMat); scene.add(frame);
+  // the glass itself is smooth: a thin non-climbable collider so you can't walk through it
+  addCol('mirror', p => sdBox(p, new V3(cx - 0.05, y0 + MIRROR.h / 2, cz), new V3(0.06, MIRROR.h / 2, MIRROR.w / 2)), new V3(cx, y0 + MIRROR.h / 2, cz), 2, false);
+  const mirror = new Reflector(new THREE.PlaneGeometry(MIRROR.w, MIRROR.h), { textureWidth: 512, textureHeight: 560, color: 0xc8d0d8, multisample: 2, clipBias: 0.003 });
+  mirror.position.set(cx, y0 + MIRROR.h / 2, cz); mirror.rotation.y = Math.PI / 2; // faces +x, toward the spawn point
+  mirror.camera.layers.enable(MIRROR_LAYER); scene.add(mirror);
+  MIRROR.mesh = mirror; MIRROR.normal = new V3(1, 0, 0);
+  MIRROR.avatar = makeGorilla(ME.color, ME.name);
+  MIRROR.avatar.group.traverse(o => o.layers.set(MIRROR_LAYER)); MIRROR.avatar.tag.visible = false; MIRROR.avatar.group.visible = false;
+}
+const _mp = new V3(), _mq = new Q();
+function updateMirror() {
+  camera.getWorldPosition(_mp);
+  const toCam = _mp.clone().sub(MIRROR.mesh.position);
+  const near = toCam.length() < MIRROR_RANGE && toCam.dot(MIRROR.normal) > 0.05;
+  MIRROR.mesh.visible = near; // reflection pass only runs when close, in front, and (via frustum culling) on screen
+  const av = MIRROR.avatar;
+  av.group.visible = near && GAME.playing;
+  if (!av.group.visible) return;
+  camera.getWorldQuaternion(_mq);
+  if (av.color.getHexString() !== new C3(ME.color).getHexString()) av.setColor(ME.color);
+  const it = NET.infected.has(NET.selfId); if (it !== av.it) av.apply(it);
+  av.pose(_mp, _mq, handsW[0], handsW[1]);
+}
+MM.MIRROR = MIRROR; MM.MIRROR_LAYER = MIRROR_LAYER;

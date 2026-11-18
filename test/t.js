@@ -1,7 +1,7 @@
 // Monkey Mayhem test suite. Run one at a time: flock /workspace/.browser-test.lock node test/t.js
 const { chromium } = require('/workspace/strike/node_modules/playwright');
 const URL = process.env.MM_URL || 'http://127.0.0.1:8765/index.html';
-const MM_RELAYS_N = 6;
+const MM_RELAYS_N = 6, MM_MIRROR_X = -5.2;
 const SHOTS = __dirname + '/../shots/';
 let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
 const HELPERS = () => {
@@ -174,6 +174,40 @@ const LOCAL_TRANSPORT = () => {
     return { updAvg: ts.reduce((a, b) => a + b, 0) / ts.length, updP95: ts[Math.floor(ts.length * 0.95)], ...ri };
   });
   ok(perf.updAvg < 1.5 && perf.calls < 40 && perf.triangles < 60000, `frame cost: game update ${perf.updAvg.toFixed(3)} ms avg / ${perf.updP95.toFixed(3)} p95, ${perf.calls} draw calls, ${perf.triangles} triangles per eye (solo)`);
+  // mirror near spawn: you see your own gorilla (local avatar only rendered in the reflection)
+  const mir = await A.p.evaluate(() => {
+    const M = MM.MIRROR, T3 = MM.THREE, r = {}, R = MM.renderer, gl = R.getContext();
+    r.distSpawn = Math.hypot(M.c.x, M.c.z);
+    const S = M.c.x + 1.7; MM.paused = true; MM.timeOverride = 0.25; MM.PH.freeze = false;
+    const look = (pitch) => new T3.Quaternion().setFromEuler(new T3.Euler(pitch, Math.PI / 2, 0, 'YXZ')).toArray();
+    MM.fake = { head: [0, 1.6, 0], headQ: look(0.02), hands: [{ p: [-0.35, 1.0, 0.3] }, { p: [-0.35, 1.0, -0.3] }] };
+    MM.place(S, MM.terrainH(S, M.c.z) + 0.95, M.c.z); MM.step(1 / 72, 30);
+    const av = M.avatar, magenta = () => { const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight, px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); let n = 0, sx = 0, sy = 0; for (let i = 0; i < px.length; i += 4) if (px[i] > 170 && px[i + 1] < 90 && px[i + 2] > 170) { n++; sx += (i / 4) % w; sy += Math.floor(i / 4 / w); } return { n, cx: n ? sx / n : -1, cy: n ? sy / n : -1 }; };
+    const oldColor = MM.ME.color; MM.ME.color = '#ff00ff';
+    R.info.autoReset = false; const meas = () => { const ts = []; let calls = 0, tris = 0; for (let i = 0; i < 20; i++) { R.info.reset(); const t0 = performance.now(); MM.render(); gl.finish(); ts.push(performance.now() - t0); calls = R.info.render.calls; tris = R.info.render.triangles; } ts.sort((a, b) => a - b); return { ms: ts[10], calls, tris }; };
+    MM.render(); r.near = { visible: M.mesh.visible, avatar: av.group.visible, px: magenta(), perf: meas() };
+    r.layers = { mainSeesAvatar: MM.camera.layers.test(av.body.layers), mirrorSeesAvatar: M.mesh.camera.layers.test(av.body.layers) };
+    // wave the right hand up: avatar hand in the mirror follows
+    MM.render(); const b0 = magenta();
+    MM.fake.hands[1].p = [-0.3, 2.05, -0.3]; MM.step(1 / 72, 3); MM.render(); const b1 = magenta(); r.handFollow = av.hands[1].position.distanceTo(new T3.Vector3(...MM.handsW()[1])); r.shift = b1.cy - b0.cy; r.shiftN = [b0.n, b1.n];
+    // step sideways: reflection moves too
+    // far away / behind: no reflection pass
+    MM.place(M.c.x + 16, MM.terrainH(M.c.x + 16, M.c.z) + 0.95, M.c.z); MM.step(1 / 72, 5); MM.render(); r.far = { visible: M.mesh.visible, px: magenta().n, perf: meas() };
+    MM.place(M.c.x - 1.5, 1, M.c.z); MM.PH.freeze = true; MM.step(1 / 72); MM.render(); r.behindVisible = M.mesh.visible; MM.PH.freeze = false;
+    // glass isn't climbable; frame logs are
+    const glass = MM.colliders.find(c => c.kind === 'mirror'), frame = MM.colliders.filter(c => c.kind === 'mirrorframe');
+    r.glassClimb = glass.climb; r.frameClimb = frame.length && frame.every(c => c.climb);
+    R.info.autoReset = true; MM.ME.color = oldColor; MM.step(1 / 72);
+    return r;
+  });
+  ok(mir.distSpawn > 3 && mir.distSpawn < 8, `mirror stands ${mir.distSpawn.toFixed(1)} m from spawn, facing the centre`);
+  ok(mir.near.visible && mir.near.avatar && !mir.layers.mainSeesAvatar && mir.layers.mirrorSeesAvatar, 'own gorilla is drawn only in the mirror reflection (hidden from the first-person camera)');
+  ok(mir.near.px.n > 300, `player sees their own gorilla in the mirror (${mir.near.px.n} avatar pixels in the reflection)`);
+  ok(mir.handFollow < 0.01, 'mirrored hands follow the player\'s hands');
+  ok(Math.abs(mir.shift) > 2, `reflection moves with the player: raising a hand moves the mirrored gorilla's pixels (centroid ${mir.shift.toFixed(1)} px, ${mir.shiftN} px)`);
+  ok(!mir.far.visible && mir.far.px === 0 && !mir.behindVisible, 'reflection pass skipped when far (>14 m) or behind the mirror');
+  ok(!mir.glassClimb && mir.frameClimb, 'mirror glass is not climbable (frame logs are)');
+  console.log(`INFO mirror perf: near ${mir.near.perf.calls} draw calls / ${mir.near.perf.tris} tris / ${mir.near.perf.ms.toFixed(1)} ms (SwiftShader) vs far ${mir.far.perf.calls} calls / ${mir.far.perf.tris} tris / ${mir.far.perf.ms.toFixed(1)} ms`);
   // screenshots (HUD hidden)
   await A.p.evaluate(() => { document.getElementById('hud').style.display = 'none'; document.getElementById('hint').style.display = 'none'; });
   const shot = async (name, pos, yaw, pitch, t) => { await A.p.evaluate(([pos, yaw, pitch, t]) => { MM.timeOverride = t; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: new MM.THREE.Quaternion().setFromEuler(new MM.THREE.Euler(pitch, yaw, 0, 'YXZ')).toArray(), hands: [{ p: [-0.25, 0.95, -0.35] }, { p: [0.25, 0.95, -0.35] }] }; MM.place(...pos); MM.step(1 / 72); MM.render(); }, [pos, yaw, pitch, t]); await A.p.screenshot({ path: SHOTS + name }); };
@@ -181,6 +215,8 @@ const LOCAL_TRANSPORT = () => {
   await shot('waterfall_caves.png', [-4, 3, -14], 0.12, 0.05, 0.3);
   await shot('canopy_course.png', [-6.4, 8.2, -5.2], -1.45, -0.12, 0.27);
   await shot('jungle_overview.png', [21, 15, 21], 0.78, -0.42, 0.2);
+  await A.p.evaluate(() => { MM.PH.freeze = false; });
+  await shot('mirror.png', [MM_MIRROR_X + 2.3, 0.95, 1.3], Math.PI / 2 - 0.3, 0.03, 0.25);
   await shot('night_fireflies.png', [2, 1.3, 6], -0.6, 0.05, 0.78);
   await shot('sunset.png', [-10, 4.5, 12], -2.4, 0.0, 0.485);
   await A.ctx.close();
@@ -200,8 +236,8 @@ const LOCAL_TRANSPORT = () => {
     const err = Math.hypot(r1.head[0] - me2[0], r1.head[1] - me2[1], r1.head[2] - me2[2]);
     ok(err < 0.25, `remote head pose synced at 15 Hz and interpolated (err ${err.toFixed(3)} m)`);
     ok(r1.name === 'Bongo' && r1.tag === 'Bongo', 'floating name tag above the remote gorilla shows the name set on the landing page');
-    const rate = await P1.p.evaluate(async () => { const a = MM.stats.posesSent; await new Promise(r => setTimeout(r, 2000)); return (MM.stats.posesSent - a) / 2; });
-    ok(rate >= 10 && rate <= 20, `pose send rate ${rate.toFixed(1)} Hz`);
+    const [rate, fps] = await P1.p.evaluate(async () => { let f = 0, run = true; const tick = () => { f++; if (run) requestAnimationFrame(tick); }; requestAnimationFrame(tick); const a = MM.stats.posesSent; await new Promise(r => setTimeout(r, 2000)); run = false; return [(MM.stats.posesSent - a) / 2, f / 2]; });
+    ok(rate >= Math.min(13, fps * 0.85) && rate <= 20, `pose send rate ${rate.toFixed(1)} Hz (target 15 Hz; headless page ran at ${fps.toFixed(0)} fps)`);
     await P1.p.waitForFunction(() => MM.NET.round >= 1 && MM.NET.infected.size === 1, null, { timeout: 15000 }).catch(() => { });
     await P1.p.waitForTimeout(400);
     const st = await Promise.all([P1, P2].map(P => P.p.evaluate(() => ({ round: MM.NET.round, inf: [...MM.NET.infected], self: MM.NET.selfId, mode: MM.NET.mode }))));
