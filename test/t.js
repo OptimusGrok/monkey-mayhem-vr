@@ -19,7 +19,7 @@ const HELPERS = () => {
       return maxY;
     },
     hw(i) { return MM.handsW()[i]; },
-    handTo(i, w) { const P = MM.rig.position; const f = MM.fake; f.hands[i].p = [w[0] - P.x, w[1] - P.y, w[2] - P.z]; },
+    handTo(i, w) { const P = MM.rig.position; const f = MM.fake; f.hands[i].p = [w[0] - P.x, w[1] - P.y + MM.HAND_DROP, w[2] - P.z]; }, // fake = controller pose; virtual hand sits HAND_DROP lower
   };
 };
 
@@ -80,7 +80,7 @@ const LOCAL_TRANSPORT = () => {
       T.run(0.3, t => { const z = -0.45 + (t / 0.3) * 0.9; T.set([-0.25, -0.98, z], [0.25, -0.98, z]); });
       T.set([-0.25, -0.55, 0.45], [0.25, -0.55, 0.45]); T.run(0.12);
     }
-    T.idle(); T.run(0.8); out.z1 = MM.headW().z;
+    T.idle(); T.run(1.8); out.z1 = MM.headW().z; // lower virtual hands push a bit longer: let the glide settle
     // arms idle, no input: must not move
     const z2 = MM.headW().z; T.run(1); out.drift = Math.abs(MM.headW().z - z2);
     // push down hard = jump
@@ -91,6 +91,16 @@ const LOCAL_TRANSPORT = () => {
   });
   ok(loco.z0 - loco.z1 > 1.5, `hand-push locomotion moves the player forward ${(loco.z0 - loco.z1).toFixed(2)} m in 4 arm strokes`);
   ok(loco.drift < 0.02, `no movement without arm swings (drift ${loco.drift.toFixed(3)} m)`);
+  const wr = await A.p.evaluate(() => {
+    const r = {}; MM.PH.freeze = true; T.idle(); MM.step(1 / 72); r.def = MM.wristShown();
+    const click = () => { MM.fake.hands[0].stick = true; MM.step(1 / 72); const held = MM.wristShown(); MM.step(1 / 72); MM.step(1 / 72); const stillHeld = MM.wristShown(); MM.fake.hands[0].stick = false; MM.step(1 / 72); return [held, stillHeld]; };
+    // hidden: touching where the mic dot would be does nothing
+    const b = MM.muteBtnW(), P = MM.rig.position, m0 = MM.VOICE.muted; MM.fake.hands[1].p = [b[0] - P.x, b[1] - P.y + MM.HAND_DROP, b[2] - P.z]; MM.step(1 / 72); MM.step(1 / 72); r.hiddenNoMute = MM.VOICE.muted === m0; T.idle(); MM.step(1 / 72);
+    r.c1 = click(); r.c2 = click(); r.right = (() => { MM.fake.hands[1].stick = true; MM.step(1 / 72); const v = MM.wristShown(); MM.fake.hands[1].stick = false; MM.step(1 / 72); return v; })();
+    MM.PH.freeze = false; return r;
+  });
+  ok(!wr.def && wr.hiddenNoMute, 'wrist info panel and mic dot are hidden by default (and the hidden dot can\'t be bumped)');
+  ok(wr.c1[0] && wr.c1[1] && !wr.c2[0] && !wr.c2[1] && !wr.right, 'left thumbstick click toggles the wrist panel + mic dot (edge-triggered: holding doesn\'t flicker; right stick does nothing)');
   ok(loco.jump > 0.35, `push down + release launches a jump (+${loco.jump.toFixed(2)} m)`);
   const climb = await A.p.evaluate(() => {
     const r = {}; const g = MM.terrainH;
@@ -155,6 +165,7 @@ const LOCAL_TRANSPORT = () => {
     const r = {}; MM.timeOverride = 0.25; MM.render(); r.noon = { sun: MM.sunVisible(), moon: MM.moonVisible(), ff: MM.firefliesOp(), sunI: MM.sunI(), fog: MM.fogColor() };
     MM.timeOverride = 0.75; MM.render(); r.night = { sun: MM.sunVisible(), moon: MM.moonVisible(), ff: MM.firefliesOp(), sunI: MM.sunI(), fog: MM.fogColor() };
     MM.timeOverride = 0.5; MM.render(); r.dusk = MM.fogColor();
+    MM.timeOverride = 0.25; MM.render(); r.noon.sky = MM.skyColor(); r.noon.stars = MM.starsOp(); MM.timeOverride = 0.75; MM.render(); r.night.sky = MM.skyColor(); r.night.stars = MM.starsOp(); r.starR = MM.stars.geometry.boundingSphere ? MM.stars.geometry.boundingSphere.radius : (MM.stars.geometry.computeBoundingSphere(), MM.stars.geometry.boundingSphere.radius); r.starN = MM.stars.geometry.attributes.position.count; r.far = MM.camera.far; r.fogFar = MM.scene.fog.far; MM.timeOverride = 0.5; MM.render(); r.duskSky = MM.skyColor(); r.duskStars = MM.starsOp(); r.skyMeshes = 0; MM.scene.traverse(o => { if (o.isMesh && o.material && o.material.side === MM.THREE.BackSide) r.skyMeshes++; });
     r.additiveMeshes = []; MM.scene.traverse(o => { if (o.isMesh && o.material && o.material.blending === MM.THREE.AdditiveBlending) r.additiveMeshes.push(o.geometry.type); }); r.raysApi = typeof MM.raysOp;
     MM.timeOverride = null; MM.render(); r.phase = MM.DAY.phase; r.expected = ((Date.now() / 1000) % 600) / 600;
     const b0 = MM.birdPos(), u0 = MM.butterPos(); const t0 = performance.now(); while (performance.now() - t0 < 300) { } MM.render(); r.birdMoved = Math.hypot(...MM.birdPos().map((v, i) => v - b0[i])); r.butterMoved = Math.hypot(...MM.butterPos().map((v, i) => v - u0[i])); r.birdY = b0[1];
@@ -163,6 +174,11 @@ const LOCAL_TRANSPORT = () => {
   ok(daynight.noon.sun && !daynight.noon.moon && daynight.noon.ff === 0 && daynight.night.moon && !daynight.night.sun && daynight.night.ff > 0.9, 'day/night: sun by day; moon + glowing fireflies at night');
   ok(daynight.additiveMeshes.length === 0 && daynight.raysApi === 'undefined', `sun shafts / god rays removed (additive meshes in scene: ${daynight.additiveMeshes.length})`);
   ok(daynight.night.sunI < daynight.noon.sunI / 3 && daynight.noon.fog !== daynight.night.fog && daynight.dusk !== daynight.noon.fog, `sky, fog and light change (sun ${daynight.noon.sunI.toFixed(2)}→${daynight.night.sunI.toFixed(2)}, fog #${daynight.noon.fog}→#${daynight.night.fog}, dusk #${daynight.dusk})`);
+  const lum = h => { const v = parseInt(h, 16); return 0.2126 * (v >> 16) + 0.7152 * (v >> 8 & 255) + 0.0722 * (v & 255); };
+  ok(daynight.skyMeshes === 0 && daynight.noon.sky === daynight.noon.fog && daynight.night.sky === daynight.night.fog && daynight.duskSky === daynight.dusk, `sky is one even colour, identical to the fog (no gradient dome / seams): noon #${daynight.noon.sky}, dusk #${daynight.duskSky}, night #${daynight.night.sky}`);
+  ok(lum(daynight.night.sky) > 25 && parseInt(daynight.night.sky.slice(4), 16) > parseInt(daynight.night.sky.slice(0, 2), 16), `night sky is dark navy, not black (#${daynight.night.sky}, luminance ${lum(daynight.night.sky).toFixed(0)}/255)`);
+  ok(daynight.night.stars > 0.9 && daynight.noon.stars === 0 && daynight.duskStars > 0.2 && daynight.duskStars < daynight.night.stars, `stars: ${daynight.starN} points, shown at night (${daynight.night.stars.toFixed(2)}), fading in at dusk (${daynight.duskStars.toFixed(2)}), hidden by day`);
+  ok(daynight.starR > daynight.fogFar * 2 && daynight.starR < daynight.far * 0.8, `stars sit beyond the world and fog (${daynight.starR.toFixed(0)} m) and inside the far plane (${daynight.far} m)`);
   ok(Math.abs(daynight.phase - daynight.expected) < 0.003, `time of day comes from the shared clock (10 min cycle), phase ${daynight.phase.toFixed(4)}`);
   ok(daynight.birdMoved > 0.1 && daynight.butterMoved > 0.02 && daynight.birdY > 14, `birds fly overhead (y≈${daynight.birdY.toFixed(1)} m) and butterflies flutter (moved ${daynight.birdMoved.toFixed(2)} / ${daynight.butterMoved.toFixed(2)} m)`);
   // audio graph: ambience sources exist and are positional
@@ -213,17 +229,49 @@ const LOCAL_TRANSPORT = () => {
   // gorilla look (Gorilla Tag style): dark fur in the player's colour, light grey face/chest plates, 3 fingers + thumb, furry forearms
   const gor = await A.p.evaluate(() => {
     const av = MM.MIRROR.avatar, tri = m => m.geometry.attributes.position.count / 3, r = {};
-    r.tris = tri(av.body) + tri(av.head) + 2 * tri(av.arms[0]) + 2 * tri(av.hands[0]); r.handTris = tri(MM.myHands[0]);
+    r.tris = tri(av.body) + tri(av.head) + 2 * tri(av.arms[0]) + 2 * tri(av.fores[0]) + 2 * tri(av.hands[0]); r.handTris = tri(MM.myHands[0]);
     const fur = m => { const f = m.geometry.attributes.fur.array; let a = 0; for (const v of f) a += v; return [a, f.length]; };
     r.headFur = fur(av.head); r.bodyFur = fur(av.body); r.handFurAll = fur(MM.myHands[0])[0] === fur(MM.myHands[0])[1];
     r.defaultColor = MM.ME.color; r.tagOnChest = av.tag.parent === av.body && av.tag.position.z < -0.3; r.tagFilter = av.tag.material.map.magFilter === MM.THREE.NearestFilter;
     r.handsDiffer = MM.myHands[0].geometry !== MM.myHands[1].geometry; const bb = new MM.THREE.Box3().setFromBufferAttribute(MM.myHands[0].geometry.attributes.position); r.handLen = bb.max.z - bb.min.z;
+    { const P = av.head.geometry.attributes.position.array, c = [0, 0.03 * 1.22, 0.02 * 1.22], R = [0.175 * 1.05 * 1.22, 0.175 * 1.03 * 1.22, 0.175 * 1.22]; let worst = 0; for (let k = 0; k < P.length; k += 3) if (P[k + 1] > 0.14) worst = Math.max(worst, Math.hypot((P[k] - c[0]) / R[0], (P[k + 1] - c[1]) / R[1], (P[k + 2] - c[2]) / R[2])); r.headBulge = worst; }
     return r;
   });
   ok(gor.headFur[0] > 0 && gor.headFur[0] < gor.headFur[1] && gor.bodyFur[0] < gor.bodyFur[1] && gor.handFurAll, `gorilla has player-coloured fur plus fixed light grey face and chest plates (head ${gor.headFur[1] - gor.headFur[0]}/${gor.headFur[1]} plate verts)`);
   ok(/^#[0-3][0-9a-f][0-3][0-9a-f][0-3][0-9a-f]$/i.test(gor.defaultColor), `default fur colour is near-black (${gor.defaultColor})`);
   ok(gor.tagOnChest && gor.tagFilter, 'name tag is pixel-style text on the gorilla\'s chest');
-  ok(gor.handsDiffer && gor.handLen > 0.3, `first-person hands: left/right models with fingers, thumb and furry forearm (${gor.handLen.toFixed(2)} m long, ${gor.handTris} tris)`);
+  ok(gor.handsDiffer && gor.handLen > 0.2, `first-person hands: left/right models with fingers and thumb (${gor.handLen.toFixed(2)} m long, ${gor.handTris} tris)`);
+  // arms: one joined limb (shoulder -> elbow -> wrist -> hand) at every reach, elbow out/back, hands hang HAND_DROP below the controller
+  const ik = await A.p.evaluate(() => {
+    const T3 = MM.THREE, V = (...a) => new T3.Vector3(...a), A = MM.ARM, r = { cases: [] };
+    MM.PH.freeze = true; MM.place(2, 0.95, 4);
+    const q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray();
+    const poses = { sides: [[-0.75, 1.3, 0], [0.75, 1.3, 0]], ground: [[-0.3, 0.75, -0.35], [0.3, 0.75, -0.35]], raised: [[-0.3, 2.3, -0.2], [0.35, 1.1, -0.3]], overreach: [[-0.95, 1.3, -0.55], [0.85, 0.75, -0.65]], close: [[-0.1, 1.35, -0.05], [0.12, 1.25, 0.02]], behind: [[-0.3, 1.0, 0.45], [0.3, 1.0, 0.45]] };
+    for (const [name, hp] of Object.entries(poses)) {
+      MM.fake = { head: [0, 1.6, 0], headQ: q(0, 0, 0), hands: [{ p: hp[0], q: q(-0.3, 0.2, -0.4) }, { p: hp[1], q: q(-0.3, -0.2, 0.4) }] }; MM.step(1 / 72);
+      for (const [arms, hands] of [[MM.myArms.map(a => [a.u, a.f]), MM.myHands]]) for (let i = 0; i < 2; i++) {
+        const [u, f] = arms[i]; u.updateMatrixWorld(true); f.updateMatrixWorld(true); hands[i].updateMatrixWorld(true);
+        const elbowA = u.localToWorld(V(0, 0, A.L1)), elbowB = f.getWorldPosition(V()), wristA = f.localToWorld(V(0, 0, A.L2)), wristB = hands[i].localToWorld(A.WRIST_LOCAL.clone());
+        const head = MM.headW(), sx = i ? 1 : -1, el = elbowB.clone().sub(head);
+        r.cases.push({ name, i, gapElbow: elbowA.distanceTo(elbowB), gapWrist: wristA.distanceTo(wristB), out: el.x * sx, stretch: u.scale.z, finite: [elbowB.x, elbowB.y, elbowB.z].every(Number.isFinite) });
+      }
+    }
+    // controller vs virtual hand: same physics + visible position, HAND_DROP lower
+    MM.fake = { head: [0, 1.6, 0], headQ: q(0, 0, 0), hands: [{ p: [-0.3, 1.2, -0.3] }, { p: [0.3, 1.2, -0.3] }] }; MM.step(1 / 72);
+    const P = MM.rig.position; r.drop = 1.2 + P.y - MM.handsW()[0][1]; r.visSame = MM.myHands[0].position.distanceTo(V(...MM.handsW()[0])); r.HAND_DROP = MM.HAND_DROP;
+    // mirror / remote avatar arms are joined too
+    const av = MM.MIRROR.avatar; av.pose(V(0, 1.6, 0), new T3.Quaternion(), V(-0.7, 1.0, -0.4), V(0.5, 0.6, 0.1)); av.group.updateMatrixWorld(true);
+    r.avGap = Math.max(...[0, 1].map(i => av.arms[i].localToWorld(V(0, 0, A.L1)).distanceTo(av.fores[i].getWorldPosition(V()))));
+    r.avWrist = Math.max(...[0, 1].map(i => av.fores[i].localToWorld(V(0, 0, A.L2)).distanceTo(av.hands[i].getWorldPosition(V())))); // hand sits right at the forearm end
+    MM.PH.freeze = false; return r;
+  });
+  const worst = k => Math.max(...ik.cases.map(c => c[k]));
+  ok(worst('gapElbow') < 0.005 && worst('gapWrist') < 0.005 && ik.cases.every(c => c.finite), `arms are one joined limb in every pose (sides/ground/raised/overreach/close/behind): max elbow gap ${(worst('gapElbow') * 1000).toFixed(1)} mm, wrist gap ${(worst('gapWrist') * 1000).toFixed(1)} mm`);
+  ok(ik.cases.filter(c => c.name !== 'overreach').every(c => c.out > 0.08), `elbows bend outward, never flip (min elbow offset ${Math.min(...ik.cases.map(c => c.out)).toFixed(2)} m to the side)`);
+  ok(ik.cases.filter(c => c.name === 'overreach').every(c => c.stretch > 1 && c.stretch < 1.6), `over-reach stretches the arm slightly instead of detaching (x${Math.max(...ik.cases.map(c => c.stretch)).toFixed(2)})`);
+  ok(Math.abs(ik.drop - ik.HAND_DROP) < 0.003 && ik.visSame < 0.001, `virtual hand + collider hang ${(ik.drop * 100).toFixed(0)} cm below the controller, visible hand at the physics hand`);
+  ok(ik.avGap < 0.005 && ik.avWrist < 0.09, `remote/mirror gorilla arms joined: elbow gap ${(ik.avGap * 1000).toFixed(1)} mm, hand ${(ik.avWrist * 100).toFixed(1)} cm from forearm end (inside the wrist)`);
+  ok(gor.headBulge < 1.02, `head is a smooth rounded dome on top: nothing sticks out of it, no cap-peak brow (max ${gor.headBulge.toFixed(3)} of dome radius)`);
   ok(gor.tris < 3000, `whole gorilla stays Quest-friendly (${gor.tris} triangles)`);
   // screenshots (HUD hidden)
   await A.p.evaluate(() => { document.getElementById('hud').style.display = 'none'; document.getElementById('hint').style.display = 'none'; });
@@ -234,12 +282,19 @@ const LOCAL_TRANSPORT = () => {
   await shot('jungle_overview.png', [21, 15, 21], 0.78, -0.42, 0.2);
   await A.p.evaluate(() => { MM.PH.freeze = false; });
   await shot('mirror.png', [MM_MIRROR_X + 2.3, 0.95, 1.3], Math.PI / 2 - 0.3, 0.03, 0.25);
-  // close-up of the gorilla in the mirror, waving
-  await A.p.evaluate(X => { const T3 = MM.THREE, q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q(-0.12, Math.PI / 2 - 0.08, 0), hands: [{ p: [-0.3, 1.1, 0.38], q: q(0.2, Math.PI / 2 + 0.3, -0.4) }, { p: [-0.12, 1.95, -0.5], q: q(1.3, Math.PI / 2 - 0.2, 0.6) }] }; MM.place(X + 0.9, MM.terrainH(X + 0.9, 0.6) + 0.95, 0.7); MM.step(1 / 72); MM.render(); }, MM_MIRROR_X);
-  await A.p.screenshot({ path: SHOTS + 'gorilla_style.png' });
+  // gorilla in the mirror: arms out to the sides, down on the ground, one raised (one joined arm with an elbow)
+  const mirrorPose = async (name, hands, pitch) => { await A.p.evaluate(([X, hands, pitch]) => { const T3 = MM.THREE, q = a => new T3.Quaternion().setFromEuler(new T3.Euler(a[0], a[1], a[2], 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q([pitch, Math.PI / 2 - 0.06, 0]), hands: hands.map(h => ({ p: h[0], q: q(h[1]) })) }; MM.place(X + 0.8, MM.terrainH(X + 0.8, 0.6) + 0.95, 0.62); MM.step(1 / 72); MM.render(); }, [MM_MIRROR_X, hands, pitch]); await A.p.screenshot({ path: SHOTS + name }); };
+  await mirrorPose('gorilla_style.png', [[[-0.2, 1.2, 0.62], [-0.3, Math.PI - 0.5, 0.3]], [[-0.18, 2.25, -0.28], [1.35, Math.PI / 2, 0.3]]], -0.1);
+  await mirrorPose('gorilla_arms_sides.png', [[[-0.1, 1.35, 0.72], [-0.15, Math.PI - 0.3, 0.6]], [[-0.1, 1.35, -0.72], [-0.15, 0.3, -0.6]]], -0.1);
+  await mirrorPose('gorilla_arms_ground.png', [[[-0.38, 0.8, 0.32], [-1.2, Math.PI / 2 + 0.3, -0.5]], [[-0.38, 0.8, -0.32], [-1.2, Math.PI / 2 - 0.3, 0.5]]], -0.25);
+  // first-person hands reaching the ground
+  await A.p.evaluate(() => { const T3 = MM.THREE, q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q(-0.8, 0, 0), hands: [{ p: [-0.24, 0.78, -0.42], q: q(-0.55, 0.15, -1.45) }, { p: [0.24, 0.78, -0.42], q: q(-0.55, -0.15, 1.45) }] }; MM.place(1.5, MM.terrainH(1.5, 3) + 0.95, 3); MM.step(1 / 72); MM.render(); });
+  await A.p.screenshot({ path: SHOTS + 'hands_ground.png' });
   // first-person view of your own hands (3 fingers + thumb, furry forearms)
   await A.p.evaluate(() => { const T3 = MM.THREE, q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q(-0.32, 0, 0), hands: [{ p: [-0.21, 1.36, -0.46], q: new T3.Quaternion().setFromEuler(new T3.Euler(-0.35, 0.35, 0, 'YXZ')).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 0, 1), Math.PI / 2)).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 1, 0), -Math.PI / 2)).toArray() }, { p: [0.21, 1.36, -0.46], q: new T3.Quaternion().setFromEuler(new T3.Euler(-0.35, -0.35, 0, 'YXZ')).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 0, 1), -Math.PI / 2)).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 1, 0), Math.PI / 2)).toArray() }] }; MM.place(1.5, 0.95, 3); MM.step(1 / 72); MM.render(); });
   await A.p.screenshot({ path: SHOTS + 'hands_fp.png' });
+  await shot('night_sky.png', [3, 0.95, 4], 0.6, 1.1, 0.75);
+  await shot('dusk_sky.png', [3, 0.95, 4], -2.3, 1.0, 0.5);
   await shot('night_fireflies.png', [2, 1.3, 6], -0.6, 0.05, 0.78);
   await shot('sunset.png', [-10, 4.5, 12], -2.4, 0.0, 0.485);
   await A.ctx.close();
@@ -287,7 +342,7 @@ const LOCAL_TRANSPORT = () => {
     ok(v[0].voice && v[1].voice && v[0].stream && v[1].stream, 'proximity voice: both mics open (getUserMedia) and each side wires the peer stream into WebAudio');
     ok(v[0].pan && Math.hypot(v[0].pan[0] - v[0].head[0], v[0].pan[2] - v[0].head[2]) < 0.5, 'voice is positional: HRTF panner follows the remote gorilla head');
     const g = d => 1.2 / (1.2 + 1.6 * (Math.max(d, 1.2) - 1.2)); ok(g(20) < 0.05 && g(2) > 0.4, `voice fades with distance (inverse model: gain ${g(2).toFixed(2)} at 2 m, ${g(10).toFixed(2)} at 10 m, ${g(20).toFixed(3)} at 20 m)`);
-    const mute = await P1.p.evaluate(() => { MM.PH.freeze = true; MM.step(1 / 72); const P = MM.rig.position; const b = MM.muteBtnW(); MM.fake.hands[1].p = [b[0] - P.x, b[1] - P.y, b[2] - P.z]; MM.step(1 / 72); MM.step(1 / 72); const r = { muted: MM.VOICE.muted, track: MM.VOICE.stream.getAudioTracks()[0].enabled }; MM.fake.hands[1].p = [0.27, 0.98, -0.2]; MM.step(1 / 72); MM.PH.freeze = false; return r; });
+    const mute = await P1.p.evaluate(() => { MM.PH.freeze = true; MM.fake.hands[0].stick = true; MM.step(1 / 72); MM.fake.hands[0].stick = false; MM.step(1 / 72); /* open the wrist panel */ const P = MM.rig.position; const b = MM.muteBtnW(); MM.fake.hands[1].p = [b[0] - P.x, b[1] - P.y + MM.HAND_DROP, b[2] - P.z]; MM.step(1 / 72); MM.step(1 / 72); const r = { muted: MM.VOICE.muted, track: MM.VOICE.stream.getAudioTracks()[0].enabled }; MM.fake.hands[1].p = [0.27, 0.98, -0.2]; MM.step(1 / 72); MM.PH.freeze = false; return r; });
     ok(mute.muted && !mute.track, 'touching the wrist mute button with the right hand mutes the mic track');
     const ph = await Promise.all([P1, P2].map(P => P.p.evaluate(() => MM.DAY.phase)));
     ok(Math.abs(ph[0] - ph[1]) < 0.002, `time of day in sync across players (${ph[0].toFixed(4)} vs ${ph[1].toFixed(4)})`);

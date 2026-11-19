@@ -12,6 +12,10 @@ const rr = (a, b) => a + (b - a) * rnd();
 // ---------- constants ----------
 const HALF = 25, WALL_H = 18, CLIMB_H = 9;           // 50x50 clearing, wall 18 m, bottom 9 m climbable
 const HR = 0.07;                                     // hand collider radius
+const HAND_DROP = 0.1;                               // virtual hand (and its collider) sits 10 cm below the real controller: easier to reach the ground
+const ARM_L1 = 0.37, ARM_L2 = 0.37;                  // gorilla upper arm / forearm (IK bones)
+const SHOULDER = { x: 0.25, y: -0.4, z: 0.03 };      // shoulder joint relative to the head (yaw frame)
+const WRIST_LOCAL = new V3(0, 0, 0.072); // wrist point in hand (grip) space
 const BODY_OFF = 0.55, BODY_R = 0.35, HEAD_R = 0.18; // body sphere centre below head
 const GRAV = 9.8, MAX_JUMP = 7.0, VEL_MULT = 1.15;
 const WATER_Y = -0.12;
@@ -301,14 +305,16 @@ for (const [pos, yaw] of [[new V3(-6.3, 1.7, -4.6), 0.55], [new V3(-6.6, 8.1, -7
 }
 const worldMesh = new THREE.Mesh(world.build(), worldMat); scene.add(worldMesh);
 
-// ---------- sky, sun, moon, mist, fireflies ----------
-const skyMat = new THREE.ShaderMaterial({
-  side: THREE.BackSide, depthWrite: false, fog: false,
-  uniforms: { top: { value: new C3() }, hor: { value: new C3() } },
-  vertexShader: 'varying float h;void main(){h=normalize(position).y;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-  fragmentShader: 'varying float h;uniform vec3 top;uniform vec3 hor;void main(){gl_FragColor=vec4(mix(hor,top,smoothstep(0.,.55,h)),1.);}',
-});
-const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 16, 10), skyMat); sky.renderOrder = -1; scene.add(sky);
+// ---------- sky colour, stars, sun, moon, mist, fireflies ----------
+// sky: one even colour per moment (scene.background, identical to the fog colour, so fogged far walls melt into it: no bands, corners or black cap)
+// stars: a few hundred points far beyond everything (no fog), faded in at dusk, out at dawn
+const starMat = new THREE.PointsMaterial({ size: 3, sizeAttenuation: false, vertexColors: true, transparent: true, opacity: 0, depthWrite: false, fog: false });
+const stars = (() => {
+  const n = 420, p = [], c = []; let h = 4242; const r = () => (h = (h * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < n; i++) { const y = 0.04 + 0.96 * Math.sqrt(r()), ph = r() * Math.PI * 2, rr = Math.sqrt(1 - y * y), k = 0.55 + 0.45 * r(); p.push(Math.cos(ph) * rr * 250, y * 250, Math.sin(ph) * rr * 250); c.push(k, k, k * (0.92 + 0.08 * r())); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(c, 3));
+  const m = new THREE.Points(g, starMat); m.frustumCulled = false; m.renderOrder = -1; m.visible = false; scene.add(m); return m;
+})();
 const sun = new THREE.Mesh(new THREE.IcosahedronGeometry(9, 1), new THREE.MeshBasicMaterial({ color: 0xfff3b0, fog: false })); scene.add(sun);
 const moon = new THREE.Mesh(new THREE.IcosahedronGeometry(6, 1), new THREE.MeshBasicMaterial({ color: 0xe6ecff, fog: false })); scene.add(moon);
 const mistTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'); const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = gr; x.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
@@ -425,7 +431,7 @@ function mirrorX(geo) { // right-hand copy of a left-hand model (flip x, keep tr
   for (let i = 0; i < p.length; i += 3) { p[i] = -p[i]; n[i] = -n[i]; }
   g.computeBoundingSphere(); return g;
 }
-// Hand in WebXR grip space (left hand): palm faces +x, fingers wrap forward (-z), thumb on top, forearm back (+z).
+// Hand in WebXR grip space (left hand): palm faces +x, fingers wrap forward (-z), thumb on top, wrist at +z (the IK forearm joins there).
 function buildHand() {
   const gb = new GorillaBuilder(); gb.h = 777; const SKIN = new C3(2.1, 2.1, 2.1), SKIN2 = new C3(1.7, 1.7, 1.7); // palm/fingers a shade lighter than the fur
   gb.add(new THREE.BoxGeometry(0.06, 0.11, 0.105), SKIN2, M4(new V3(0.002, 0, -0.01)), 1, 0.06);           // palm
@@ -435,14 +441,7 @@ function buildHand() {
     gb.add(new THREE.BoxGeometry(0.034, 0.03, 0.045), SKIN2, M4(new V3(0.008, y, -0.075 - len), EUL(0, -0.55, 0)), 1, 0.08);
   }
   gb.add(new THREE.BoxGeometry(0.034, 0.034, 0.07), SKIN, M4(new V3(0.03, 0.062, -0.04), EUL(0.3, -0.7, 0)), 1, 0.06); // thumb
-  const fa = new V3(0, -0.22, 1).normalize();
-  gb.add(new THREE.CylinderGeometry(0.05, 0.06, 0.17, 7, 1, true), FUR, M4(fa.clone().multiplyScalar(0.11), qFromTo(UP, fa)), 1, 0.1); // forearm
-  for (let i = 0; i < 16; i++) {                                                                         // short fur tufts, swept back along the forearm
-    const t = 0.05 + 0.15 * gb.noise(), ang = Math.PI * (0.45 + 1.1 * gb.noise());
-    const radial = new V3(Math.cos(ang), Math.sin(ang) * 0.9 - 0.15, 0).normalize();
-    const at = fa.clone().multiplyScalar(t).addScaledVector(radial, 0.048);
-    tuft(gb, at, radial.clone().multiplyScalar(0.55).addScaledVector(fa, 1), 0.03 + 0.015 * gb.noise(), 0.011);
-  }
+  gb.add(new THREE.CylinderGeometry(0.052, 0.05, 0.05, 7, 1, true).rotateX(Math.PI / 2), FUR, M4(new V3(0, 0, 0.05)), 1, 0.08); // wrist stub (forearm overlaps it)
   for (const [y, z] of [[0.035, 0.02], [-0.03, 0.025], [0.0, -0.02], [0.04, -0.03], [-0.04, -0.025]]) tuft(gb, new V3(-0.042, y, z), new V3(-0.6, 0.15, 1), 0.026, 0.01);
   for (let i = 0; i < 7; i++) { const ang = i / 7 * Math.PI * 2 + 0.3, r = new V3(Math.cos(ang) * 0.75, Math.sin(ang), 0); tuft(gb, new V3(0, 0, 0.045).addScaledVector(r, 0.055), r.clone().multiplyScalar(0.8).add(new V3(0, 0, 0.9)), 0.032, 0.012); } // shaggy wrist cuff
   for (const z of [-0.035, 0.0, 0.03]) tuft(gb, new V3(-0.01, -0.058, z), new V3(-0.2, -1, 0.8), 0.028, 0.011); // hair along the outer edge
@@ -457,9 +456,7 @@ const gorillaGeo = (() => {
   for (let i = 0; i < 9; i++) { const a = -0.9 + 1.8 * i / 8; tuft(body, new V3(Math.sin(a) * 0.3, 0.26 - Math.abs(a) * 0.08, 0.1 + Math.cos(a) * 0.12), new V3(Math.sin(a), 0.6, 0.8), 0.06, 0.022); }
   // head: big rounded fur dome, darker brow, light grey face plate, round eye rings, big dark eyes, muzzle with nostrils, small mouth
   const head = new GorillaBuilder(); head.h = 57;
-  head.add(new THREE.IcosahedronGeometry(0.175, 1), FUR, M4(new V3(0, 0.025, 0.02), null, new V3(1.05, 0.98, 1.0)), 1, 0.07);
-  head.add(new THREE.DodecahedronGeometry(0.09, 0), FUR, M4(new V3(0, 0.11, 0.0), null, new V3(1.5, 0.8, 1.4)), 1, 0.07); // crown
-  head.add(new THREE.BoxGeometry(0.29, 0.05, 0.08), FUR_DARK, M4(new V3(0, 0.085, -0.125), EUL(0.2, 0, 0)), 1, 0.05);      // brow ridge
+  head.add(new THREE.IcosahedronGeometry(0.175, 2), FUR, M4(new V3(0, 0.03, 0.02), null, new V3(1.05, 1.03, 1.0)), 1, 0.05); // smooth rounded dome (no cap-like brow band)
   head.add(new THREE.IcosahedronGeometry(0.12, 1), PLATE, M4(new V3(0, -0.02, -0.115), null, new V3(1.3, 1.08, 0.52)), 0, 0.03); // face plate
   for (const sx of [-1, 1]) {
     head.add(new THREE.CylinderGeometry(0.047, 0.047, 0.02, 10), RING, M4(new V3(0.055 * sx, 0.02, -0.165), EUL(Math.PI / 2, 0, 0)), 0, 0.02);
@@ -470,11 +467,18 @@ const gorillaGeo = (() => {
   for (const sx of [-1, 1]) head.add(new THREE.BoxGeometry(0.016, 0.012, 0.012), HOLE, M4(new V3(0.018 * sx, -0.052, -0.215)), 0, 0); // nostrils
   head.add(new THREE.BoxGeometry(0.05, 0.008, 0.012), HOLE, M4(new V3(0, -0.098, -0.205)), 0, 0); // mouth
   // arms: long and chunky, with tufts (unit length along +z, scaled to reach the hand)
-  const arm = new GorillaBuilder(); arm.h = 99;
-  arm.add(new THREE.CylinderGeometry(0.068, 0.09, 1, 7, 1, true).translate(0, 0.5, 0).rotateX(Math.PI / 2), FUR, null, 1, 0.08);
-  for (let i = 0; i < 10; i++) { const a = i * 2.4, z = 0.12 + 0.07 * i, r = new V3(Math.cos(a), Math.sin(a), 0); tuft(arm, r.clone().multiplyScalar(0.07).setZ(z), r.clone().multiplyScalar(0.6).setZ(1), 0.045, 0.016); }
-  const handL = buildHand().scale(1.2, 1.2, 1.2); // big gorilla hands
-  return { body: body.build(), head: head.build().scale(1.22, 1.22, 1.22), arm: arm.build(), hand: handL, handL, handR: mirrorX(handL) };
+  // arms: upper arm (shoulder ball -> elbow) and forearm (elbow ball -> wrist), built at nominal length along +z, posed by two-bone IK
+  const upper = new GorillaBuilder(); upper.h = 99;
+  upper.add(new THREE.DodecahedronGeometry(0.088, 0), FUR, null, 1, 0.06);
+  upper.add(new THREE.CylinderGeometry(0.074, 0.09, ARM_L1 + 0.04, 7, 1, true).translate(0, (ARM_L1 + 0.04) / 2 - 0.02, 0).rotateX(Math.PI / 2), FUR, null, 1, 0.08);
+  for (let i = 0; i < 9; i++) { const a = i * 2.4, z = 0.05 + (ARM_L1 - 0.08) * i / 8, r = new V3(Math.cos(a), Math.sin(a), 0); tuft(upper, r.clone().multiplyScalar(0.078).setZ(z), r.clone().multiplyScalar(0.6).setZ(1), 0.045, 0.016); }
+  const fore = new GorillaBuilder(); fore.h = 101;
+  fore.add(new THREE.DodecahedronGeometry(0.08, 0), FUR, M4(null, null, new V3(1, 1, 1.1)), 1, 0.06); // elbow
+  fore.add(new THREE.CylinderGeometry(0.057, 0.074, ARM_L2 + 0.05, 7, 1, true).translate(0, (ARM_L2 + 0.05) / 2, 0).rotateX(Math.PI / 2), FUR, null, 1, 0.08); // runs 5 cm into the hand
+  for (let i = 0; i < 9; i++) { const a = i * 2.4 + 1, z = 0.05 + (ARM_L2 - 0.1) * i / 8, r = new V3(Math.cos(a), Math.sin(a), 0); tuft(fore, r.clone().multiplyScalar(0.068 - 0.03 * z).setZ(z), r.clone().multiplyScalar(0.6).setZ(1), 0.04, 0.014); }
+  for (const a of [0.6, 2.2, 3.8, 5.3]) tuft(fore, new V3(Math.cos(a) * 0.05, Math.sin(a) * 0.05, -0.05), new V3(Math.cos(a) * 0.5, Math.sin(a) * 0.5, -1), 0.04, 0.016); // shaggy elbow
+  const handL = buildHand().scale(1.3, 1.3, 1.3); // big gorilla hands
+  return { body: body.build(), head: head.build().scale(1.22, 1.22, 1.22), upper: upper.build(), fore: fore.build(), hand: handL, handL, handR: mirrorX(handL) };
 })();
 function gorillaMat(color) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, color });
@@ -501,31 +505,47 @@ function nameSprite(text) {
   s.userData.set(text); return s;
 }
 const _qFlipY = new Q().setFromAxisAngle(UP, Math.PI);
+// two-bone IK: shoulder -> elbow -> wrist. Elbow bends outward/back/down (pole), stretches uniformly past full reach, never flips for close hands.
+const _ik = { dir: new V3(), perp: new V3(), pole: new V3(), S: new V3(), W: new V3(), E: new V3(), off: new V3() };
+function solveElbow(S, T, pole, out) {
+  const dir = _ik.dir.subVectors(T, S); let d = dir.length(); if (d < 1e-5) { dir.set(0, -1, 0); d = 1e-5; } else dir.divideScalar(d);
+  const k = Math.max(1, d / (ARM_L1 + ARM_L2)), a1 = ARM_L1 * k, a2 = ARM_L2 * k;
+  const dc = Math.max(Math.abs(a1 - a2) + 0.08, Math.min(d, a1 + a2 - 1e-4));
+  const a = (a1 * a1 - a2 * a2 + dc * dc) / (2 * dc), h = Math.sqrt(Math.max(0, a1 * a1 - a * a));
+  const perp = _ik.perp.copy(pole).addScaledVector(dir, -pole.dot(dir));
+  if (perp.lengthSq() < 1e-3) { perp.set(0, -1, 0).addScaledVector(dir, dir.y); if (perp.lengthSq() < 1e-4) perp.set(1, 0, 0); }
+  perp.normalize();
+  return out.copy(S).addScaledVector(dir, a).addScaledVector(perp, h);
+}
+function boneTo(m, a, b, L) { m.position.copy(a); m.scale.set(1, 1, Math.max(0.03, a.distanceTo(b)) / L); m.lookAt(b); }
+// pose one whole arm (upper, fore, hand) from the head pose (yaw quat yq), the hand position h and optional hand rotation q
+function poseArm(i, upper, fore, hand, head, yq, h, q) {
+  const sx = i ? 1 : -1, S = _ik.S.copy(_ik.off.set(SHOULDER.x * sx, SHOULDER.y, SHOULDER.z).applyQuaternion(yq)).add(head), W = _ik.W;
+  if (q) W.copy(WRIST_LOCAL).applyQuaternion(q).add(h);
+  else { const d = _ik.dir.subVectors(h, S); if (d.lengthSq() < 1e-6) d.set(0, -1, 0); d.normalize(); W.copy(h).addScaledVector(d, -WRIST_LOCAL.z); }
+  const E = solveElbow(S, W, _ik.pole.set(0.9 * sx, -0.55, 0.6).applyQuaternion(yq), _ik.E);
+  boneTo(upper, S, E, ARM_L1); boneTo(fore, E, W, ARM_L2);
+  if (hand) { hand.position.copy(h); if (q) hand.quaternion.copy(q); else hand.quaternion.copy(fore.quaternion).multiply(_qFlipY); } // no hand rotation sent: fingers continue the forearm
+}
 function makeGorilla(color, name) {
   const mat = gorillaMat(color);
   const g = { mat, color: new C3(color), group: new THREE.Group(), it: false };
   g.body = new THREE.Mesh(gorillaGeo.body, mat); g.head = new THREE.Mesh(gorillaGeo.head, mat);
   g.hands = [new THREE.Mesh(gorillaGeo.handL, mat), new THREE.Mesh(gorillaGeo.handR, mat)];
-  g.arms = [new THREE.Mesh(gorillaGeo.arm, mat), new THREE.Mesh(gorillaGeo.arm, mat)];
+  g.arms = [new THREE.Mesh(gorillaGeo.upper, mat), new THREE.Mesh(gorillaGeo.upper, mat)];
+  g.fores = [new THREE.Mesh(gorillaGeo.fore, mat), new THREE.Mesh(gorillaGeo.fore, mat)];
   g.tag = nameSprite(name);
   g.tag.position.set(0, 0.15, -0.352); g.tag.rotation.set(0, Math.PI, 0); // on the upper chest, facing forward (-z)
   g.body.add(g.tag);
-  g.group.add(g.body, g.head, ...g.hands, ...g.arms); scene.add(g.group);
+  g.group.add(g.body, g.head, ...g.hands, ...g.arms, ...g.fores); scene.add(g.group);
   g.setColor = c => { g.color.set(c); g.apply(g.it); };
   g.apply = it => { g.it = it; mat.color.copy(it ? LAVA : g.color); mat.emissive.set(it ? 0xff2200 : 0x000000); mat.emissiveIntensity = it ? 0.55 : 0; g.tag.userData.set(g.tag.userData.text, it); };
-  const yq = new Q(), sh = new V3(), e = new THREE.Euler(), d = new V3(), ye = new THREE.Euler(), off = new V3();
+  const yq = new Q(), e = new THREE.Euler(), ye = new THREE.Euler();
   g.pose = (head, hq, hl, hr, ql, qr) => {
     e.setFromQuaternion(hq, 'YXZ'); yq.setFromEuler(ye.set(0, e.y, 0));
     g.head.position.copy(head); g.head.quaternion.copy(hq);
     g.body.position.copy(head); g.body.position.y -= BODY_OFF - 0.05; g.body.quaternion.copy(yq);
-    [hl, hr].forEach((h, i) => {
-      g.hands[i].position.copy(h);
-      sh.copy(off.set(i ? 0.29 : -0.29, -0.3, 0).applyQuaternion(yq)).add(head);
-      const len = Math.max(0.05, d.subVectors(h, sh).length());
-      g.arms[i].position.copy(sh); g.arms[i].scale.set(1, 1, len); g.arms[i].lookAt(h);
-      const q = i ? qr : ql;
-      if (q) g.hands[i].quaternion.copy(q); else g.hands[i].quaternion.copy(g.arms[i].quaternion).multiply(_qFlipY); // no hand rotation sent: fingers point along the arm
-    });
+    poseArm(0, g.arms[0], g.fores[0], g.hands[0], head, yq, hl, ql); poseArm(1, g.arms[1], g.fores[1], g.hands[1], head, yq, hr, qr);
   };
   g.dispose = () => { scene.remove(g.group); mat.dispose(); g.tag.material.map.dispose(); g.tag.material.dispose(); g.tag.geometry.dispose(); };
   return g;
@@ -541,12 +561,17 @@ const ME = {
 const handMat = gorillaMat(ME.color); // first-person hands: palm, 3 fingers + thumb, furry forearm
 const myHands = [new THREE.Mesh(gorillaGeo.handL, handMat), new THREE.Mesh(gorillaGeo.handR, handMat)];
 myHands.forEach(h => scene.add(h));
+// first-person arms (upper arm + elbow + forearm joined to the hand), on their own layer so the mirror shows the full avatar instead
+const FP_LAYER = 6; camera.layers.enable(FP_LAYER);
+const myArms = [0, 1].map(() => { const u = new THREE.Mesh(gorillaGeo.upper, handMat), f = new THREE.Mesh(gorillaGeo.fore, handMat); u.layers.set(FP_LAYER); f.layers.set(FP_LAYER); scene.add(u, f); return { u, f }; });
+const _fpE = new THREE.Euler(), _fpY = new THREE.Euler(), _fpQ = new Q();
 const wristCv = document.createElement('canvas'); wristCv.width = 256; wristCv.height = 128;
 const wristTex = new THREE.CanvasTexture(wristCv); wristTex.colorSpace = THREE.SRGBColorSpace;
 const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: wristTex, fog: false }));
 wrist.position.set(0, 0.05, 0.1); wrist.rotation.x = -Math.PI / 2 + 0.35; myHands[0].add(wrist);
 const muteBtn = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.012, 10), new THREE.MeshBasicMaterial({ color: 0x33dd55, fog: false }));
 muteBtn.position.set(0.055, 0.045, 0.06); myHands[0].add(muteBtn);
+wrist.visible = muteBtn.visible = false; // hidden until the left thumbstick is clicked
 
 // ---------- input: real WebXR, desktop fallback, or scripted fake XR for tests ----------
 const DESK = { yaw: 0, pitch: -0.15, keys: new Set(), ph: 0, cph: 0, jumpT: 9, jumpLatch: false };
@@ -563,9 +588,10 @@ function readVR(frame) {
     const gp = frame.getPose(src.gripSpace, ref); if (!gp) continue;
     const p = gp.transform.position, o = gp.transform.orientation;
     inp.hands[i].p.set(p.x, p.y, p.z); inp.hands[i].q.set(o.x, o.y, o.z, o.w);
-    const b = src.gamepad && src.gamepad.buttons; inp.hands[i].grip = !!(b && b[1] && b[1].value > 0.5); inp.hands[i].src = src; found[i] = true;
+    const b = src.gamepad && src.gamepad.buttons; inp.hands[i].grip = !!(b && b[1] && b[1].value > 0.5); inp.hands[i].stick = !!(b && b[3] && b[3].pressed); inp.hands[i].src = src; found[i] = true;
   }
   for (let i = 0; i < 2; i++) if (!found[i]) inp.hands[i].p.copy(inp.head).add(new V3(i ? 0.25 : -0.25, -0.7, -0.2));
+  for (const h of inp.hands) h.p.y -= HAND_DROP; // virtual hand hangs a bit below the controller
   return inp;
 }
 function readDesk(dt) {
@@ -601,7 +627,8 @@ function readDesk(dt) {
 function readFake() {
   const f = MM.fake, inp = emptyInput();
   inp.head.fromArray(f.head || [0, 1.6, 0]); if (f.headQ) inp.headQ.fromArray(f.headQ);
-  for (let i = 0; i < 2; i++) { const h = f.hands && f.hands[i]; if (h) { inp.hands[i].p.fromArray(h.p); inp.hands[i].grip = !!h.grip; if (h.q) inp.hands[i].q.fromArray(h.q); } }
+  for (let i = 0; i < 2; i++) { const h = f.hands && f.hands[i]; if (h) { inp.hands[i].p.fromArray(h.p); inp.hands[i].grip = !!h.grip; if (h.q) inp.hands[i].q.fromArray(h.q); inp.hands[i].stick = !!h.stick; } }
+  for (const h of inp.hands) h.p.y -= HAND_DROP; // same offset as real controllers
   return inp;
 }
 
@@ -873,8 +900,8 @@ function tagCheck(handsW) {
 
 // ---------- day / night (10 min cycle from a shared clock) ----------
 const DAY = { phase: 0, day: 1 };
-const C_TOP_D = new C3('#3fa2f2'), C_HOR_D = new C3('#c4ecff'), C_TOP_N = new C3('#070b24'), C_HOR_N = new C3('#18264a'), C_DUSK = new C3('#ff9a5a');
-const _ct = new C3(), _ch = new C3(), _sd = new V3();
+const C_SKY_D = new C3('#86c8f6'), C_SKY_N = new C3('#1b2a56'), C_DUSK = new C3('#ff9a5a'); // day: the old zenith/horizon blend as one colour; night: dark navy, never black
+const _ch = new C3(), _sd = new V3();
 function dayPhase() { return MM.timeOverride != null ? MM.timeOverride : ((((Date.now() + NET.clockOff) / 1000) % CYCLE) + CYCLE) % CYCLE / CYCLE; }
 function updateSky(camPos) {
   const ph = dayPhase(), a = ph * Math.PI * 2, s = Math.sin(a);
@@ -883,8 +910,8 @@ function updateSky(camPos) {
   _sd.set(Math.cos(a), s, 0.35).normalize();
   sun.position.copy(camPos).addScaledVector(_sd, 160); moon.position.copy(camPos).addScaledVector(_sd, -160);
   sun.visible = s > -0.15; moon.visible = s < 0.15;
-  _ct.copy(C_TOP_N).lerp(C_TOP_D, day); _ch.copy(C_HOR_N).lerp(C_HOR_D, day).lerp(C_DUSK, dusk);
-  skyMat.uniforms.top.value.copy(_ct); skyMat.uniforms.hor.value.copy(_ch); sky.position.copy(camPos);
+  _ch.copy(C_SKY_N).lerp(C_SKY_D, day).lerp(C_DUSK, dusk * 0.75);
+  starMat.opacity = clamp(1 - day * 2.2, 0, 1); stars.visible = starMat.opacity > 0.01; stars.position.copy(camPos);
   scene.fog.color.copy(_ch); scene.background = scene.fog.color;
   sunLight.position.copy(_sd).multiplyScalar(s > 0 ? 30 : -30);
   sunLight.color.set(0xb8c8ff).lerp(new C3(0xfff0d0), day).lerp(C_DUSK, dusk * 0.5); sunLight.intensity = 0.35 + 1.75 * day;
@@ -995,9 +1022,13 @@ function update(dt, frame) {
     else if (!h.vine) { const q = nearest(handsW[i], 0.2); if (q.col && q.d < HR) handsW[i].addScaledVector(normalOf(q.col, handsW[i]), HR - q.d); }
     myHands[i].position.copy(handsW[i]); myHands[i].quaternion.copy(inp.hands[i].q);
   }
-  // wrist mute button: touch it with the right hand
+  _fpE.setFromQuaternion(inp.headQ, 'YXZ'); _fpQ.setFromEuler(_fpY.set(0, _fpE.y, 0));
+  for (let i = 0; i < 2; i++) poseArm(i, myArms[i].u, myArms[i].f, null, headW, _fpQ, handsW[i], inp.hands[i].q);
+  // left thumbstick click (edge) shows/hides the wrist info panel and its mic dot
+  const stick = !!inp.hands[0].stick; if (stick && !MM._stickPrev) { wrist.visible = muteBtn.visible = !wrist.visible; wristDirty = true; } MM._stickPrev = stick;
+  // wrist mute button: touch it with the right hand (only while the panel is shown)
   myHands[0].updateMatrixWorld(true); muteBtn.getWorldPosition(_bw);
-  const near = handsW[1].distanceTo(_bw) < 0.05;
+  const near = muteBtn.visible && handsW[1].distanceTo(_bw) < 0.05;
   if (near && !MM._btnLatch && now - (MM._btnT || 0) > 600) { setMute(!VOICE.muted); MM._btnT = now; }
   MM._btnLatch = near;
   const feet = headW.clone(); feet.y -= BODY_OFF + BODY_R;
@@ -1047,7 +1078,7 @@ MM.place = (x, y, z) => { const inp = MM.fake ? readFake() : emptyInput(); rig.p
 MM.headW = () => (lastInp ? lastInp.head.clone() : new V3(0, 1.6, 0)).add(rig.position);
 MM.handsW = () => handsW.map(h => h.toArray());
 MM.muteBtnW = () => { myHands[0].updateMatrixWorld(true); return muteBtn.getWorldPosition(new V3()).toArray(); };
-MM.myHands = myHands;
+MM.myHands = myHands; MM.wristShown = () => wrist.visible && muteBtn.visible; MM.skyColor = () => scene.background.getHexString(); MM.starsOp = () => (stars.visible ? starMat.opacity : 0); MM.stars = stars; MM.myArms = myArms; MM.HAND_DROP = HAND_DROP; MM.ARM = { L1: ARM_L1, L2: ARM_L2, SHOULDER, WRIST_LOCAL };
 MM.setMute = setMute; MM.joinNet = joinNet; MM.startAudio = startAudio; MM.AU = AU; MM.startVoice = startVoice;
 MM.renderInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries });
 MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, name: r.name, tag: r.avatar.tag.userData.text, color: r.color, visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));
