@@ -664,7 +664,7 @@ const isClimb = (col, p) => typeof col.climb === 'function' ? col.climb(p) : col
 function spawn(inp) {
   const a = Math.random() * Math.PI * 2, r = 0.4 + Math.random() * 0.8, sx = Math.cos(a) * r, sz = Math.sin(a) * r; // centre of the clearing (small jitter so players don't overlap)
   rig.position.set(sx - inp.head.x, terrainH(sx, sz) + BODY_OFF + BODY_R + 0.02 - inp.head.y, sz - inp.head.z);
-  PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true;
+  PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true; MM.stats.spawns = (MM.stats.spawns || 0) + 1;
 }
 function physStep(dt, inp, now) {
   const P = rig.position;
@@ -724,7 +724,15 @@ function physStep(dt, inp, now) {
   }
   if (PH.grounded && !PH.anyAnch) { const k = Math.exp(-9 * dt); PH.V.x *= k; PH.V.z *= k; if (PH.V.x * PH.V.x + PH.V.z * PH.V.z < 0.04) { PH.V.x = 0; PH.V.z = 0; } }
   const hy = P.y + inp.head.y;
-  if (hy < -6 || hy > 40 || Math.abs(P.x + inp.head.x) > HALF + 2 || Math.abs(P.z + inp.head.z) > HALF + 2) spawn(inp);
+  _oob.set(P.x + inp.head.x, hy, P.z + inp.head.z);
+  if (hy < -6 || hy > 40 || outOfBounds(_oob)) spawn(inp);
+}
+// out of the play area: beyond the clearing (+2 m slack), except inside a wall cave (they reach ~3.3 m into the north wall; the shop lives in one)
+const _oob = new V3(), CAVE_SLACK = 0.6;
+function outOfBounds(h) {
+  if (Math.abs(h.x) <= HALF + 2 && Math.abs(h.z) <= HALF + 2) return false;
+  for (const k of CAVES) if (sdBox(h, k.c, k.h) < CAVE_SLACK) return false;
+  return true;
 }
 let lastInp = null;
 function physics(dt, inp, now) {
@@ -1095,6 +1103,7 @@ function frameFn(time, frame) {
 renderer.setAnimationLoop(frameFn);
 MM.step = (dt = 1 / 72, n = 1) => { for (let i = 0; i < n; i++) update(dt, null); };
 MM.render = () => { visuals(); renderer.render(scene, camera); };
+MM.outOfBounds = (x, y, z) => outOfBounds(new V3(x, y, z));
 MM.respawn = () => { const inp = MM.fake ? readFake() : emptyInput(); lastInp = inp; spawn(inp); };
 MM.place = (x, y, z) => { const inp = MM.fake ? readFake() : emptyInput(); rig.position.set(x - inp.head.x, y - inp.head.y, z - inp.head.z); PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true; lastInp = inp; };
 MM.headW = () => (lastInp ? lastInp.head.clone() : new V3(0, 1.6, 0)).add(rig.position);

@@ -339,6 +339,33 @@ const LOCAL_TRANSPORT = () => {
   const P3 = await A.ctx.newPage(); await P3.goto(URL); await P3.waitForFunction(() => !!window.MM);
   const pers = await P3.evaluate(() => ({ w: MM.SHOP.wallet, o: [...MM.SHOP.owned].sort(), e: MM.SHOP.eq, c: MM.ME.color })); await P3.close();
   ok(pers.w === 75 && pers.o.join() === 'crown,fur-blue,party,shades' && pers.e.hat === 'party' && pers.e.face === 'shades' && pers.e.fur === 'fur-blue' && pers.c === '#2f5fd0', 'shop state persists across a reload: ' + JSON.stringify(pers));
+  // bug: reaching the back of the shop cave (past z = -27) sent you back to spawn. Whole cave interior must be play area.
+  const caveStay = await A.p.evaluate(() => {
+    MM.paused = true; MM.PH.freeze = false; const r = { caves: [] }, s0 = MM.stats.spawns || 0, k = MM.SHOP.c, cave = MM.SHOP.cave, back = cave.c.z - cave.h.z;
+    let minZ = 0, maxZ = -1e9; const track = () => { const h = MM.headW(); minZ = Math.min(minZ, h.z); maxZ = Math.max(maxZ, h.z); };
+    T.idle(); MM.place(k.x, cave.floor + 0.95, back + 0.45); T.run(3, track); // stand at the back wall
+    const targets = [...MM.SHOP.spots.map(s => s.p), MM.SHOP.btnP];
+    for (const tp of targets) { T.run(0.35, () => { T.idle(); T.handTo(0, tp.toArray()); T.handTo(1, [tp.x, tp.y, tp.z]); track(); }); T.idle(); T.run(0.15, track); }
+    r.shop = { spawns: (MM.stats.spawns || 0) - s0, minZ, maxZ, back, touched: targets.length };
+    // every wall cave/alcove: stand pressed against its back and corners for 2 s
+    for (const c of MM.CAVES) for (const dx of [-1, 0, 1]) {
+      const s1 = MM.stats.spawns || 0; minZ = 0; maxZ = -1e9;
+      MM.place(c.c.x + dx * (c.h.x - 0.4), c.floor + 0.95, c.c.z - c.h.z + 0.4); T.idle(); T.run(2, () => { T.set([-0.27, -0.3, -0.6], [0.27, -0.3, -0.6]); track(); });
+      r.caves.push({ x: c.c.x + dx * (c.h.x - 0.4), spawns: (MM.stats.spawns || 0) - s1, minZ: +minZ.toFixed(2), maxZ: +maxZ.toFixed(2) });
+    }
+    // genuine fall-outs still reset
+    const B = MM.HALF; r.oob = [MM.outOfBounds(0, 2, -B - 3), MM.outOfBounds(B + 3, 2, 0), MM.outOfBounds(-9, 4.4, back - 1.0), MM.outOfBounds(0, 2, B + 3), MM.outOfBounds(-9, 4.4, back + 0.3), MM.outOfBounds(3, 7.2, back + 0.3), MM.outOfBounds(0, 2, 0)];
+    // simulate tunnelling through the rock: take the wall colliders out for one step so they can't push you back first
+    const all = MM.colliders.slice(), walls = all.filter(c => c.kind === 'wall'); const noWalls = f => { MM.colliders.length = 0; MM.colliders.push(...all.filter(c => !walls.includes(c))); f(); MM.colliders.length = 0; MM.colliders.push(...all); };
+    const s2 = MM.stats.spawns || 0; T.idle(); noWalls(() => { MM.place(B + 6, 3, 0); MM.step(1 / 72); }); const h1 = MM.headW(); r.resetSide = { spawned: (MM.stats.spawns || 0) - s2, d: Math.hypot(h1.x, h1.z) };
+    const s3 = MM.stats.spawns || 0; noWalls(() => { MM.place(-9, 4.4, back - 2); MM.step(1 / 72); }); const h2 = MM.headW(); r.resetBehindCave = { spawned: (MM.stats.spawns || 0) - s3, d: Math.hypot(h2.x, h2.z) };
+    const s4 = MM.stats.spawns || 0; MM.place(5, 45, 5); MM.step(1 / 72); const h3 = MM.headW(); r.resetFall = { spawned: (MM.stats.spawns || 0) - s4, d: Math.hypot(h3.x, h3.z) };
+    MM.paused = false; return r;
+  });
+  ok(caveStay.shop.spawns === 0 && caveStay.shop.minZ < -27.3 && caveStay.shop.maxZ < -25, `back of the shop is play area: ~7 s at the back wall touching ${caveStay.shop.touched} shelf items, fur board and button with no respawn (head z ${caveStay.shop.maxZ.toFixed(2)}..${caveStay.shop.minZ.toFixed(2)}, back wall ${caveStay.shop.back.toFixed(2)})`);
+  ok(caveStay.caves.every(c => c.spawns === 0 && c.minZ < -27.3), 'both wall caves: back and corners never respawn you ' + JSON.stringify(caveStay.caves));
+  ok(caveStay.oob.join() === 'true,true,true,true,false,false,false', 'out-of-bounds check: outside the clearing or behind a cave = out, inside caves/clearing = in ' + caveStay.oob);
+  ok(caveStay.resetSide.spawned === 1 && caveStay.resetSide.d < 2 && caveStay.resetBehindCave.spawned === 1 && caveStay.resetBehindCave.d < 2 && caveStay.resetFall.spawned === 1 && caveStay.resetFall.d < 2, 'genuine out-of-bounds (past the side wall, through the rock behind the shop, flung out the top) still resets to spawn ' + JSON.stringify([caveStay.resetSide, caveStay.resetBehindCave, caveStay.resetFall]));
   // shop shots
   const shopShot = async (name, pos, yaw, pitch, hands) => { await A.p.evaluate(([pos, yaw, pitch, hands]) => { const T3 = MM.THREE; MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: new T3.Quaternion().setFromEuler(new T3.Euler(pitch, yaw, 0, 'YXZ')).toArray(), hands: hands || [{ p: [-0.25, 0.95, 0.2] }, { p: [0.25, 0.95, 0.2] }] }; const k = MM.SHOP.c; MM.place(k.x + pos[0], k.y - 0.25 + pos[1], k.z + pos[2]); MM.step(1 / 72); MM.render(); }, [pos, yaw, pitch, hands]); await A.p.screenshot({ path: SHOTS + name }); };
   await A.p.evaluate(() => { MM.shopSetWallet(400); for (const id of ['tophat', 'scarf']) { MM.shopSelect(id); MM.shopPress(); } MM.shopSelect('fur-red'); });
