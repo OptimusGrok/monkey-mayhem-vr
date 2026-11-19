@@ -301,7 +301,7 @@ for (const [pos, yaw] of [[new V3(-6.3, 1.7, -4.6), 0.55], [new V3(-6.6, 8.1, -7
 }
 const worldMesh = new THREE.Mesh(world.build(), worldMat); scene.add(worldMesh);
 
-// ---------- sky, sun, moon, sun shafts, mist, fireflies ----------
+// ---------- sky, sun, moon, mist, fireflies ----------
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,
   uniforms: { top: { value: new C3() }, hor: { value: new C3() } },
@@ -311,21 +311,6 @@ const skyMat = new THREE.ShaderMaterial({
 const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 16, 10), skyMat); sky.renderOrder = -1; scene.add(sky);
 const sun = new THREE.Mesh(new THREE.IcosahedronGeometry(9, 1), new THREE.MeshBasicMaterial({ color: 0xfff3b0, fog: false })); scene.add(sun);
 const moon = new THREE.Mesh(new THREE.IcosahedronGeometry(6, 1), new THREE.MeshBasicMaterial({ color: 0xe6ecff, fog: false })); scene.add(moon);
-const rayMat = new THREE.ShaderMaterial({
-  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-  uniforms: { op: { value: 0.3 }, col: { value: new C3(1, 0.93, 0.7) } },
-  vertexShader: 'varying float v;void main(){v=uv.y;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-  fragmentShader: 'varying float v;uniform float op;uniform vec3 col;void main(){gl_FragColor=vec4(col*op*smoothstep(0.,.3,v)*(1.-v*.55),1.);}',
-});
-{
-  const pos = [], uv = [], cone = new THREE.CylinderGeometry(0.5, 1.7, 15, 10, 1, true).toNonIndexed();
-  for (const [x, z, s] of [[2, -3, 1], [-4, 5, 0.9], [4, 12.5, 1.1], [-13.5, -5, 1], [12, -11, 0.9], [-2, -13, 1.1], [9, 1, 0.8], [-17, 2, 1]]) {
-    const g = cone.clone(); g.applyMatrix4(M4(new V3(x, 7.5, z), new Q().setFromEuler(new THREE.Euler(0.12, 0, 0.22)), new V3(s, 1, s)));
-    pos.push(...g.attributes.position.array); uv.push(...g.attributes.uv.array);
-  }
-  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  scene.add(new THREE.Mesh(g, rayMat));
-}
 const mistTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'); const gr = x.createRadialGradient(32, 32, 0, 32, 32, 32); gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = gr; x.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
 const mistMat = new THREE.MeshBasicMaterial({ map: mistTex, transparent: true, opacity: 0.22, depthWrite: false, color: 0xffffff });
 const mist = new THREE.Group(); scene.add(mist);
@@ -399,48 +384,150 @@ const BANANAS = [];
 const bananaMesh = new THREE.InstancedMesh(bananaGeo, new THREE.MeshLambertMaterial({ vertexColors: true, emissive: 0x403000, flatShading: true }), BANANAS.length);
 bananaMesh.frustumCulled = false; scene.add(bananaMesh);
 
-// ---------- gorilla avatars ----------
+// ---------- gorilla avatars (classic Gorilla Tag look: dark fur, light grey face + chest plates) ----------
+// Built with its own deterministic noise (not the seeded world rnd) so the world layout is untouched.
+// Per-vertex 'fur' flag: fur takes the player's colour (or lava), face/chest plates stay light grey.
+class GorillaBuilder {
+  constructor() { this.p = []; this.n = []; this.c = []; this.f = []; this.h = 12345; }
+  noise() { this.h = (this.h * 16807) % 2147483647; return this.h / 2147483647; }
+  add(geo, color, m, fur = 1, vary = 0.08) {
+    const g = geo.index ? geo.toNonIndexed() : geo.clone(); geo.dispose();
+    if (m) g.applyMatrix4(m);
+    g.computeVertexNormals();
+    const p = g.attributes.position.array, n = g.attributes.normal.array, base = new C3(color);
+    for (let i = 0; i < p.length; i += 9) { const k = 1 + (this.noise() - 0.5) * 2 * vary; for (let j = 0; j < 3; j++) { this.c.push(base.r * k, base.g * k, base.b * k); this.f.push(fur); } }
+    for (const v of p) this.p.push(v); for (const v of n) this.n.push(v);
+    g.dispose(); return this;
+  }
+  build() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
+    g.setAttribute('fur', new THREE.Float32BufferAttribute(this.f, 1));
+    g.computeBoundingSphere(); return g;
+  }
+}
+const EUL = (x, y, z) => new Q().setFromEuler(new THREE.Euler(x, y, z));
+const FUR = '#ffffff', FUR_DARK = '#9a9a9a', PLATE = '#b4b4b4', RING = '#858585', EYE = '#101010', MUZZLE = '#c4c4c4', HOLE = '#2a2a2a';
+// a tuft of fur: thin open 4-sided spike from 'at' along 'dir'
+function tuft(gb, at, dir, len = 0.05, r = 0.016, col = FUR) {
+  const d = dir.clone().normalize();
+  gb.add(new THREE.ConeGeometry(r, len, 4, 1, true), col, M4(at.clone().addScaledVector(d, len / 2), qFromTo(UP, d)), 1, 0.15);
+}
+function mirrorX(geo) { // right-hand copy of a left-hand model (flip x, keep triangle winding front-facing)
+  const g = geo.clone();
+  for (const name of ['position', 'normal', 'color', 'fur']) {
+    const a = g.attributes[name], s = a.itemSize, arr = a.array;
+    for (let i = 0; i < arr.length; i += 3 * s) for (let k = 0; k < s; k++) { const t = arr[i + s + k]; arr[i + s + k] = arr[i + 2 * s + k]; arr[i + 2 * s + k] = t; }
+  }
+  const p = g.attributes.position.array, n = g.attributes.normal.array;
+  for (let i = 0; i < p.length; i += 3) { p[i] = -p[i]; n[i] = -n[i]; }
+  g.computeBoundingSphere(); return g;
+}
+// Hand in WebXR grip space (left hand): palm faces +x, fingers wrap forward (-z), thumb on top, forearm back (+z).
+function buildHand() {
+  const gb = new GorillaBuilder(); gb.h = 777; const SKIN = new C3(2.1, 2.1, 2.1), SKIN2 = new C3(1.7, 1.7, 1.7); // palm/fingers a shade lighter than the fur
+  gb.add(new THREE.BoxGeometry(0.06, 0.11, 0.105), SKIN2, M4(new V3(0.002, 0, -0.01)), 1, 0.06);           // palm
+  gb.add(new THREE.BoxGeometry(0.03, 0.115, 0.075), FUR, M4(new V3(-0.028, 0, 0.0)), 1, 0.06);              // back of hand
+  for (const [y, len] of [[0.037, 0.06], [0, 0.068], [-0.037, 0.056]]) {                                  // 3 chunky fingers
+    gb.add(new THREE.BoxGeometry(0.038, 0.032, len), SKIN, M4(new V3(-0.006, y, -0.06 - len / 2)), 1, 0.08);
+    gb.add(new THREE.BoxGeometry(0.034, 0.03, 0.045), SKIN2, M4(new V3(0.008, y, -0.075 - len), EUL(0, -0.55, 0)), 1, 0.08);
+  }
+  gb.add(new THREE.BoxGeometry(0.034, 0.034, 0.07), SKIN, M4(new V3(0.03, 0.062, -0.04), EUL(0.3, -0.7, 0)), 1, 0.06); // thumb
+  const fa = new V3(0, -0.22, 1).normalize();
+  gb.add(new THREE.CylinderGeometry(0.05, 0.06, 0.17, 7, 1, true), FUR, M4(fa.clone().multiplyScalar(0.11), qFromTo(UP, fa)), 1, 0.1); // forearm
+  for (let i = 0; i < 16; i++) {                                                                         // short fur tufts, swept back along the forearm
+    const t = 0.05 + 0.15 * gb.noise(), ang = Math.PI * (0.45 + 1.1 * gb.noise());
+    const radial = new V3(Math.cos(ang), Math.sin(ang) * 0.9 - 0.15, 0).normalize();
+    const at = fa.clone().multiplyScalar(t).addScaledVector(radial, 0.048);
+    tuft(gb, at, radial.clone().multiplyScalar(0.55).addScaledVector(fa, 1), 0.03 + 0.015 * gb.noise(), 0.011);
+  }
+  for (const [y, z] of [[0.035, 0.02], [-0.03, 0.025], [0.0, -0.02], [0.04, -0.03], [-0.04, -0.025]]) tuft(gb, new V3(-0.042, y, z), new V3(-0.6, 0.15, 1), 0.026, 0.01);
+  for (let i = 0; i < 7; i++) { const ang = i / 7 * Math.PI * 2 + 0.3, r = new V3(Math.cos(ang) * 0.75, Math.sin(ang), 0); tuft(gb, new V3(0, 0, 0.045).addScaledVector(r, 0.055), r.clone().multiplyScalar(0.8).add(new V3(0, 0, 0.9)), 0.032, 0.012); } // shaggy wrist cuff
+  for (const z of [-0.035, 0.0, 0.03]) tuft(gb, new V3(-0.01, -0.058, z), new V3(-0.2, -1, 0.8), 0.028, 0.011); // hair along the outer edge
+  return gb.build();
+}
 const gorillaGeo = (() => {
-  const body = new Merger(); body.add(new THREE.DodecahedronGeometry(0.36, 0), '#ffffff', M4(null, null, new V3(1.05, 1.15, 0.85)), 0.05);
-  body.add(new THREE.DodecahedronGeometry(0.2, 0), '#b8a998', M4(new V3(0, -0.02, -0.24), null, new V3(1, 1.2, 0.5)), 0.03);
-  const head = new Merger(); head.add(new THREE.BoxGeometry(0.3, 0.27, 0.3), '#ffffff', null, 0.06);
-  head.add(new THREE.BoxGeometry(0.23, 0.17, 0.06), '#5a5048', M4(new V3(0, -0.02, -0.15)), 0.02);
-  for (const sx of [-1, 1]) { head.add(new THREE.BoxGeometry(0.05, 0.05, 0.02), '#ffffff', M4(new V3(0.055 * sx, 0.02, -0.185)), 0); head.add(new THREE.BoxGeometry(0.025, 0.025, 0.02), '#111111', M4(new V3(0.055 * sx, 0.02, -0.195)), 0); }
-  head.add(new THREE.BoxGeometry(0.34, 0.06, 0.2), '#ffffff', M4(new V3(0, 0.12, 0.02)), 0.05);
-  const hand = new Merger(); hand.add(new THREE.IcosahedronGeometry(HR, 1), '#ffffff', null, 0.05);
-  return { body: body.build(), head: head.build(), hand: hand.build(), arm: (() => { const g = new THREE.CylinderGeometry(0.05, 0.06, 1, 6).translate(0, 0.5, 0).rotateX(Math.PI / 2); g.setAttribute('color', new THREE.Float32BufferAttribute(new Array(g.attributes.position.count * 3).fill(1), 3)); return g; })() }; // arms need a (white) colour attribute or vertexColors renders them black
+  // torso: short and bulky, no legs; light grey chest plate
+  const body = new GorillaBuilder(); body.h = 31;
+  body.add(new THREE.DodecahedronGeometry(0.36, 0), FUR, M4(null, null, new V3(1.15, 1.0, 0.9)), 1, 0.06);
+  for (const sx of [-1, 1]) body.add(new THREE.DodecahedronGeometry(0.16, 0), FUR, M4(new V3(0.29 * sx, 0.17, 0.02)), 1, 0.06);
+  body.add(new THREE.IcosahedronGeometry(0.25, 1), PLATE, M4(new V3(0, 0.02, -0.255), null, new V3(1.0, 1.05, 0.38)), 0, 0.03);
+  for (let i = 0; i < 9; i++) { const a = -0.9 + 1.8 * i / 8; tuft(body, new V3(Math.sin(a) * 0.3, 0.26 - Math.abs(a) * 0.08, 0.1 + Math.cos(a) * 0.12), new V3(Math.sin(a), 0.6, 0.8), 0.06, 0.022); }
+  // head: big rounded fur dome, darker brow, light grey face plate, round eye rings, big dark eyes, muzzle with nostrils, small mouth
+  const head = new GorillaBuilder(); head.h = 57;
+  head.add(new THREE.IcosahedronGeometry(0.175, 1), FUR, M4(new V3(0, 0.025, 0.02), null, new V3(1.05, 0.98, 1.0)), 1, 0.07);
+  head.add(new THREE.DodecahedronGeometry(0.09, 0), FUR, M4(new V3(0, 0.11, 0.0), null, new V3(1.5, 0.8, 1.4)), 1, 0.07); // crown
+  head.add(new THREE.BoxGeometry(0.29, 0.05, 0.08), FUR_DARK, M4(new V3(0, 0.085, -0.125), EUL(0.2, 0, 0)), 1, 0.05);      // brow ridge
+  head.add(new THREE.IcosahedronGeometry(0.12, 1), PLATE, M4(new V3(0, -0.02, -0.115), null, new V3(1.3, 1.08, 0.52)), 0, 0.03); // face plate
+  for (const sx of [-1, 1]) {
+    head.add(new THREE.CylinderGeometry(0.047, 0.047, 0.02, 10), RING, M4(new V3(0.055 * sx, 0.02, -0.165), EUL(Math.PI / 2, 0, 0)), 0, 0.02);
+    head.add(new THREE.CylinderGeometry(0.031, 0.031, 0.02, 10), EYE, M4(new V3(0.055 * sx, 0.02, -0.174), EUL(Math.PI / 2, 0, 0)), 0, 0);
+    head.add(new THREE.BoxGeometry(0.012, 0.012, 0.01), '#ffffff', M4(new V3(0.055 * sx + 0.01, 0.032, -0.185)), 0, 0); // eye glint
+  }
+  head.add(new THREE.IcosahedronGeometry(0.068, 1), MUZZLE, M4(new V3(0, -0.07, -0.165), null, new V3(1.3, 0.82, 0.75)), 0, 0.03); // muzzle
+  for (const sx of [-1, 1]) head.add(new THREE.BoxGeometry(0.016, 0.012, 0.012), HOLE, M4(new V3(0.018 * sx, -0.052, -0.215)), 0, 0); // nostrils
+  head.add(new THREE.BoxGeometry(0.05, 0.008, 0.012), HOLE, M4(new V3(0, -0.098, -0.205)), 0, 0); // mouth
+  // arms: long and chunky, with tufts (unit length along +z, scaled to reach the hand)
+  const arm = new GorillaBuilder(); arm.h = 99;
+  arm.add(new THREE.CylinderGeometry(0.068, 0.09, 1, 7, 1, true).translate(0, 0.5, 0).rotateX(Math.PI / 2), FUR, null, 1, 0.08);
+  for (let i = 0; i < 10; i++) { const a = i * 2.4, z = 0.12 + 0.07 * i, r = new V3(Math.cos(a), Math.sin(a), 0); tuft(arm, r.clone().multiplyScalar(0.07).setZ(z), r.clone().multiplyScalar(0.6).setZ(1), 0.045, 0.016); }
+  const handL = buildHand().scale(1.2, 1.2, 1.2); // big gorilla hands
+  return { body: body.build(), head: head.build().scale(1.22, 1.22, 1.22), arm: arm.build(), hand: handL, handL, handR: mirrorX(handL) };
 })();
+function gorillaMat(color) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, color });
+  m.onBeforeCompile = s => {
+    s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float fur;\nvarying float vFur;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvFur = fur;');
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vFur;').replace('#include <color_fragment>', 'diffuseColor.rgb = vColor.rgb * mix(vec3(1.0), diffuse, vFur);');
+  };
+  m.customProgramCacheKey = () => 'gorilla-fur';
+  return m;
+}
 const LAVA = new C3(0xff4a12);
+// name tag: white pixel-style text on the chest (crisp nearest-filtered low-res canvas, hard alpha)
 function nameSprite(text) {
-  const c = document.createElement('canvas'); c.width = 256; c.height = 64; const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false })); s.scale.set(0.8, 0.2, 1);
-  s.userData.set = (t, it) => { const x = c.getContext('2d'); x.clearRect(0, 0, 256, 64); x.fillStyle = it ? 'rgba(160,30,0,.75)' : 'rgba(0,0,0,.55)'; x.beginPath(); if (x.roundRect) x.roundRect(4, 6, 248, 52, 20); else x.rect(4, 6, 248, 52); x.fill(); x.fillStyle = '#fff'; x.font = 'bold 34px system-ui,sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(t, 128, 33); tex.needsUpdate = true; s.userData.text = t; };
+  const W = 128, H = 20, c = document.createElement('canvas'); c.width = W; c.height = H; const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
+  const s = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.053), new THREE.MeshBasicMaterial({ map: tex, transparent: true, alphaTest: 0.5, depthWrite: false }));
+  s.userData.set = (t, it) => {
+    const x = c.getContext('2d'); x.clearRect(0, 0, W, H);
+    x.fillStyle = '#fff'; x.font = 'bold 15px monospace'; x.textAlign = 'center'; x.textBaseline = 'middle';
+    const str = String(t).toUpperCase(); const w = x.measureText(str).width; x.save(); if (w > W - 4) { x.translate(W / 2, 0); x.scale((W - 4) / w, 1); x.translate(-W / 2, 0); } x.fillText(str, W / 2, H / 2 + 1); x.restore();
+    const im = x.getImageData(0, 0, W, H), d = im.data; for (let i = 3; i < d.length; i += 4) { const on = d[i] > 110; d[i] = on ? 255 : 0; d[i - 1] = d[i - 2] = d[i - 3] = 255; } x.putImageData(im, 0, 0);
+    tex.needsUpdate = true; s.userData.text = t; s.userData.it = !!it;
+  };
   s.userData.set(text); return s;
 }
+const _qFlipY = new Q().setFromAxisAngle(UP, Math.PI);
 function makeGorilla(color, name) {
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, color });
+  const mat = gorillaMat(color);
   const g = { mat, color: new C3(color), group: new THREE.Group(), it: false };
   g.body = new THREE.Mesh(gorillaGeo.body, mat); g.head = new THREE.Mesh(gorillaGeo.head, mat);
-  g.hands = [new THREE.Mesh(gorillaGeo.hand, mat), new THREE.Mesh(gorillaGeo.hand, mat)];
+  g.hands = [new THREE.Mesh(gorillaGeo.handL, mat), new THREE.Mesh(gorillaGeo.handR, mat)];
   g.arms = [new THREE.Mesh(gorillaGeo.arm, mat), new THREE.Mesh(gorillaGeo.arm, mat)];
   g.tag = nameSprite(name);
-  g.group.add(g.body, g.head, ...g.hands, ...g.arms, g.tag); scene.add(g.group);
+  g.tag.position.set(0, 0.15, -0.352); g.tag.rotation.set(0, Math.PI, 0); // on the upper chest, facing forward (-z)
+  g.body.add(g.tag);
+  g.group.add(g.body, g.head, ...g.hands, ...g.arms); scene.add(g.group);
   g.setColor = c => { g.color.set(c); g.apply(g.it); };
   g.apply = it => { g.it = it; mat.color.copy(it ? LAVA : g.color); mat.emissive.set(it ? 0xff2200 : 0x000000); mat.emissiveIntensity = it ? 0.55 : 0; g.tag.userData.set(g.tag.userData.text, it); };
   const yq = new Q(), sh = new V3(), e = new THREE.Euler(), d = new V3(), ye = new THREE.Euler(), off = new V3();
-  g.pose = (head, hq, hl, hr) => {
+  g.pose = (head, hq, hl, hr, ql, qr) => {
     e.setFromQuaternion(hq, 'YXZ'); yq.setFromEuler(ye.set(0, e.y, 0));
     g.head.position.copy(head); g.head.quaternion.copy(hq);
     g.body.position.copy(head); g.body.position.y -= BODY_OFF - 0.05; g.body.quaternion.copy(yq);
     [hl, hr].forEach((h, i) => {
       g.hands[i].position.copy(h);
-      sh.copy(off.set(i ? 0.27 : -0.27, -0.3, 0).applyQuaternion(yq)).add(head);
+      sh.copy(off.set(i ? 0.29 : -0.29, -0.3, 0).applyQuaternion(yq)).add(head);
       const len = Math.max(0.05, d.subVectors(h, sh).length());
       g.arms[i].position.copy(sh); g.arms[i].scale.set(1, 1, len); g.arms[i].lookAt(h);
+      const q = i ? qr : ql;
+      if (q) g.hands[i].quaternion.copy(q); else g.hands[i].quaternion.copy(g.arms[i].quaternion).multiply(_qFlipY); // no hand rotation sent: fingers point along the arm
     });
-    g.tag.position.copy(head); g.tag.position.y += 0.42;
   };
-  g.dispose = () => { scene.remove(g.group); mat.dispose(); g.tag.material.map.dispose(); g.tag.material.dispose(); };
+  g.dispose = () => { scene.remove(g.group); mat.dispose(); g.tag.material.map.dispose(); g.tag.material.dispose(); g.tag.geometry.dispose(); };
   return g;
 }
 
@@ -448,12 +535,12 @@ function makeGorilla(color, name) {
 const LS = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
 const ME = {
   name: LS('mm_name') || ('Monkey' + (100 + Math.floor(Math.random() * 900))),
-  color: '#' + new C3().setHSL(Math.random(), 0.75, 0.55).getHexString(),
+  color: '#34343a', // classic near-black gorilla fur (face and chest plates stay light grey)
   bananas: 0,
 };
-const handMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, color: ME.color });
-const myHands = [new THREE.Mesh(gorillaGeo.hand, handMat), new THREE.Mesh(gorillaGeo.hand, handMat)];
-myHands.forEach(h => { h.scale.setScalar(1.15); scene.add(h); });
+const handMat = gorillaMat(ME.color); // first-person hands: palm, 3 fingers + thumb, furry forearm
+const myHands = [new THREE.Mesh(gorillaGeo.handL, handMat), new THREE.Mesh(gorillaGeo.handR, handMat)];
+myHands.forEach(h => scene.add(h));
 const wristCv = document.createElement('canvas'); wristCv.width = 256; wristCv.height = 128;
 const wristTex = new THREE.CanvasTexture(wristCv); wristTex.colorSpace = THREE.SRGBColorSpace;
 const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: wristTex, fog: false }));
@@ -514,7 +601,7 @@ function readDesk(dt) {
 function readFake() {
   const f = MM.fake, inp = emptyInput();
   inp.head.fromArray(f.head || [0, 1.6, 0]); if (f.headQ) inp.headQ.fromArray(f.headQ);
-  for (let i = 0; i < 2; i++) { const h = f.hands && f.hands[i]; if (h) { inp.hands[i].p.fromArray(h.p); inp.hands[i].grip = !!h.grip; } }
+  for (let i = 0; i < 2; i++) { const h = f.hands && f.hands[i]; if (h) { inp.hands[i].p.fromArray(h.p); inp.hands[i].grip = !!h.grip; if (h.q) inp.hands[i].q.fromArray(h.q); } }
   return inp;
 }
 
@@ -802,7 +889,6 @@ function updateSky(camPos) {
   sunLight.position.copy(_sd).multiplyScalar(s > 0 ? 30 : -30);
   sunLight.color.set(0xb8c8ff).lerp(new C3(0xfff0d0), day).lerp(C_DUSK, dusk * 0.5); sunLight.intensity = 0.35 + 1.75 * day;
   hemi.intensity = 0.3 + 0.75 * day; hemi.color.set(0x6a7ab8).lerp(new C3(0xcfeeff), day);
-  rayMat.uniforms.op.value = 0.03 + 0.15 * day; rayMat.uniforms.col.value.set(0x8aa6ff).lerp(new C3(1, 0.93, 0.7), day);
   ffMat.uniforms.op.value = clamp(1 - day * 1.3, 0, 1); fireflies.visible = day < 0.8;
   mistMat.color.set(0x6f80b0).lerp(new C3(0xffffff), day); mistMat.opacity = 0.16 + 0.08 * (1 - day);
   fallMat.uniforms.light.value = 0.35 + 0.65 * day; water.material.emissive.set(0x0a3a50).multiplyScalar(0.3 + 0.7 * day);
@@ -890,7 +976,7 @@ const MM = window.MM = {
   THREE, scene, renderer, rig, camera, PH, VINES, BANANAS, TREES, COURSE, COURSE_S, NET, VOICE, ME, DAY, ROCKS, CAVES, PLATFORMS, colliders, nearest, terrainH, GAME,
   paused: false, fake: null, timeOverride: null, stats: { tagsSent: 0, vineGrabs: 0, slips: 0, posesSent: 0 }, CLIMB_H, HALF, WALL_H, HR, BODY_OFF, BODY_R,
   frameMs, updateMs: [], RELAYS, APPID, NETLOG, birdPos: () => [...birdMesh.geometry.attributes.position.array.slice(0, 3)], butterPos: () => [...butterMesh.geometry.attributes.position.array.slice(0, 3)],
-  sunVisible: () => sun.visible, moonVisible: () => moon.visible, firefliesOp: () => ffMat.uniforms.op.value, raysOp: () => rayMat.uniforms.op.value, sunI: () => sunLight.intensity, fogColor: () => scene.fog.color.getHexString(),
+  sunVisible: () => sun.visible, moonVisible: () => moon.visible, firefliesOp: () => ffMat.uniforms.op.value, sunI: () => sunLight.intensity, fogColor: () => scene.fog.color.getHexString(),
 };
 const handsW = [new V3(), new V3()];
 const _hw = new V3(), _bw = new V3();
@@ -961,6 +1047,7 @@ MM.place = (x, y, z) => { const inp = MM.fake ? readFake() : emptyInput(); rig.p
 MM.headW = () => (lastInp ? lastInp.head.clone() : new V3(0, 1.6, 0)).add(rig.position);
 MM.handsW = () => handsW.map(h => h.toArray());
 MM.muteBtnW = () => { myHands[0].updateMatrixWorld(true); return muteBtn.getWorldPosition(new V3()).toArray(); };
+MM.myHands = myHands;
 MM.setMute = setMute; MM.joinNet = joinNet; MM.startAudio = startAudio; MM.AU = AU; MM.startVoice = startVoice;
 MM.renderInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries });
 MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, name: r.name, tag: r.avatar.tag.userData.text, color: r.color, visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));
@@ -1038,7 +1125,7 @@ const MIRROR = { c: new V3(-5.2, 0, 0.6), w: 2.2, h: 2.4, bottom: 0.25 };
   mirror.camera.layers.enable(MIRROR_LAYER); scene.add(mirror);
   MIRROR.mesh = mirror; MIRROR.normal = new V3(1, 0, 0);
   MIRROR.avatar = makeGorilla(ME.color, ME.name);
-  MIRROR.avatar.group.traverse(o => o.layers.set(MIRROR_LAYER)); MIRROR.avatar.tag.visible = false; MIRROR.avatar.group.visible = false;
+  MIRROR.avatar.group.traverse(o => o.layers.set(MIRROR_LAYER)); MIRROR.avatar.group.visible = false; // chest name tag reads reversed, like a real mirror
 }
 const _mp = new V3(), _mq = new Q();
 function updateMirror() {
@@ -1052,6 +1139,7 @@ function updateMirror() {
   camera.getWorldQuaternion(_mq);
   if (av.color.getHexString() !== new C3(ME.color).getHexString()) av.setColor(ME.color);
   const it = NET.infected.has(NET.selfId); if (it !== av.it) av.apply(it);
-  av.pose(_mp, _mq, handsW[0], handsW[1]);
+  if (av.tag.userData.text !== ME.name) av.tag.userData.set(ME.name, av.it);
+  av.pose(_mp, _mq, handsW[0], handsW[1], myHands[0].quaternion, myHands[1].quaternion);
 }
 MM.MIRROR = MIRROR; MM.MIRROR_LAYER = MIRROR_LAYER;

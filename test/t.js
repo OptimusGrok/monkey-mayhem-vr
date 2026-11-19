@@ -152,15 +152,17 @@ const LOCAL_TRANSPORT = () => {
   ok(course.gaps.every(g => g < 1.6), 'course hops are all within reach/swing: ' + course.gaps.map(g => g.toFixed(2)).join(', ') + ' m');
   ok(/idle/.test(course.fell), 'falling to the ground cancels the run: ' + course.fell);
   const daynight = await A.p.evaluate(() => {
-    const r = {}; MM.timeOverride = 0.25; MM.render(); r.noon = { sun: MM.sunVisible(), moon: MM.moonVisible(), ff: MM.firefliesOp(), rays: MM.raysOp(), sunI: MM.sunI(), fog: MM.fogColor() };
-    MM.timeOverride = 0.75; MM.render(); r.night = { sun: MM.sunVisible(), moon: MM.moonVisible(), ff: MM.firefliesOp(), rays: MM.raysOp(), sunI: MM.sunI(), fog: MM.fogColor() };
+    const r = {}; MM.timeOverride = 0.25; MM.render(); r.noon = { sun: MM.sunVisible(), moon: MM.moonVisible(), ff: MM.firefliesOp(), sunI: MM.sunI(), fog: MM.fogColor() };
+    MM.timeOverride = 0.75; MM.render(); r.night = { sun: MM.sunVisible(), moon: MM.moonVisible(), ff: MM.firefliesOp(), sunI: MM.sunI(), fog: MM.fogColor() };
     MM.timeOverride = 0.5; MM.render(); r.dusk = MM.fogColor();
+    r.additiveMeshes = []; MM.scene.traverse(o => { if (o.isMesh && o.material && o.material.blending === MM.THREE.AdditiveBlending) r.additiveMeshes.push(o.geometry.type); }); r.raysApi = typeof MM.raysOp;
     MM.timeOverride = null; MM.render(); r.phase = MM.DAY.phase; r.expected = ((Date.now() / 1000) % 600) / 600;
     const b0 = MM.birdPos(), u0 = MM.butterPos(); const t0 = performance.now(); while (performance.now() - t0 < 300) { } MM.render(); r.birdMoved = Math.hypot(...MM.birdPos().map((v, i) => v - b0[i])); r.butterMoved = Math.hypot(...MM.butterPos().map((v, i) => v - u0[i])); r.birdY = b0[1];
     return r;
   });
   ok(daynight.noon.sun && !daynight.noon.moon && daynight.noon.ff === 0 && daynight.night.moon && !daynight.night.sun && daynight.night.ff > 0.9, 'day/night: sun by day; moon + glowing fireflies at night');
-  ok(daynight.night.rays < daynight.noon.rays / 2.5 && daynight.night.sunI < daynight.noon.sunI / 3 && daynight.noon.fog !== daynight.night.fog && daynight.dusk !== daynight.noon.fog, `sky, fog and light change; sun shafts dim at night (rays ${daynight.noon.rays.toFixed(2)}→${daynight.night.rays.toFixed(2)}, fog #${daynight.noon.fog}→#${daynight.night.fog}, dusk #${daynight.dusk})`);
+  ok(daynight.additiveMeshes.length === 0 && daynight.raysApi === 'undefined', `sun shafts / god rays removed (additive meshes in scene: ${daynight.additiveMeshes.length})`);
+  ok(daynight.night.sunI < daynight.noon.sunI / 3 && daynight.noon.fog !== daynight.night.fog && daynight.dusk !== daynight.noon.fog, `sky, fog and light change (sun ${daynight.noon.sunI.toFixed(2)}→${daynight.night.sunI.toFixed(2)}, fog #${daynight.noon.fog}→#${daynight.night.fog}, dusk #${daynight.dusk})`);
   ok(Math.abs(daynight.phase - daynight.expected) < 0.003, `time of day comes from the shared clock (10 min cycle), phase ${daynight.phase.toFixed(4)}`);
   ok(daynight.birdMoved > 0.1 && daynight.butterMoved > 0.02 && daynight.birdY > 14, `birds fly overhead (y≈${daynight.birdY.toFixed(1)} m) and butterflies flutter (moved ${daynight.birdMoved.toFixed(2)} / ${daynight.butterMoved.toFixed(2)} m)`);
   // audio graph: ambience sources exist and are positional
@@ -208,6 +210,21 @@ const LOCAL_TRANSPORT = () => {
   ok(!mir.far.visible && mir.far.px === 0 && !mir.behindVisible, 'reflection pass skipped when far (>14 m) or behind the mirror');
   ok(!mir.glassClimb && mir.frameClimb, 'mirror glass is not climbable (frame logs are)');
   console.log(`INFO mirror perf: near ${mir.near.perf.calls} draw calls / ${mir.near.perf.tris} tris / ${mir.near.perf.ms.toFixed(1)} ms (SwiftShader) vs far ${mir.far.perf.calls} calls / ${mir.far.perf.tris} tris / ${mir.far.perf.ms.toFixed(1)} ms`);
+  // gorilla look (Gorilla Tag style): dark fur in the player's colour, light grey face/chest plates, 3 fingers + thumb, furry forearms
+  const gor = await A.p.evaluate(() => {
+    const av = MM.MIRROR.avatar, tri = m => m.geometry.attributes.position.count / 3, r = {};
+    r.tris = tri(av.body) + tri(av.head) + 2 * tri(av.arms[0]) + 2 * tri(av.hands[0]); r.handTris = tri(MM.myHands[0]);
+    const fur = m => { const f = m.geometry.attributes.fur.array; let a = 0; for (const v of f) a += v; return [a, f.length]; };
+    r.headFur = fur(av.head); r.bodyFur = fur(av.body); r.handFurAll = fur(MM.myHands[0])[0] === fur(MM.myHands[0])[1];
+    r.defaultColor = MM.ME.color; r.tagOnChest = av.tag.parent === av.body && av.tag.position.z < -0.3; r.tagFilter = av.tag.material.map.magFilter === MM.THREE.NearestFilter;
+    r.handsDiffer = MM.myHands[0].geometry !== MM.myHands[1].geometry; const bb = new MM.THREE.Box3().setFromBufferAttribute(MM.myHands[0].geometry.attributes.position); r.handLen = bb.max.z - bb.min.z;
+    return r;
+  });
+  ok(gor.headFur[0] > 0 && gor.headFur[0] < gor.headFur[1] && gor.bodyFur[0] < gor.bodyFur[1] && gor.handFurAll, `gorilla has player-coloured fur plus fixed light grey face and chest plates (head ${gor.headFur[1] - gor.headFur[0]}/${gor.headFur[1]} plate verts)`);
+  ok(/^#[0-3][0-9a-f][0-3][0-9a-f][0-3][0-9a-f]$/i.test(gor.defaultColor), `default fur colour is near-black (${gor.defaultColor})`);
+  ok(gor.tagOnChest && gor.tagFilter, 'name tag is pixel-style text on the gorilla\'s chest');
+  ok(gor.handsDiffer && gor.handLen > 0.3, `first-person hands: left/right models with fingers, thumb and furry forearm (${gor.handLen.toFixed(2)} m long, ${gor.handTris} tris)`);
+  ok(gor.tris < 3000, `whole gorilla stays Quest-friendly (${gor.tris} triangles)`);
   // screenshots (HUD hidden)
   await A.p.evaluate(() => { document.getElementById('hud').style.display = 'none'; document.getElementById('hint').style.display = 'none'; });
   const shot = async (name, pos, yaw, pitch, t) => { await A.p.evaluate(([pos, yaw, pitch, t]) => { MM.timeOverride = t; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: new MM.THREE.Quaternion().setFromEuler(new MM.THREE.Euler(pitch, yaw, 0, 'YXZ')).toArray(), hands: [{ p: [-0.25, 0.95, -0.35] }, { p: [0.25, 0.95, -0.35] }] }; MM.place(...pos); MM.step(1 / 72); MM.render(); }, [pos, yaw, pitch, t]); await A.p.screenshot({ path: SHOTS + name }); };
@@ -217,6 +234,12 @@ const LOCAL_TRANSPORT = () => {
   await shot('jungle_overview.png', [21, 15, 21], 0.78, -0.42, 0.2);
   await A.p.evaluate(() => { MM.PH.freeze = false; });
   await shot('mirror.png', [MM_MIRROR_X + 2.3, 0.95, 1.3], Math.PI / 2 - 0.3, 0.03, 0.25);
+  // close-up of the gorilla in the mirror, waving
+  await A.p.evaluate(X => { const T3 = MM.THREE, q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q(-0.12, Math.PI / 2 - 0.08, 0), hands: [{ p: [-0.3, 1.1, 0.38], q: q(0.2, Math.PI / 2 + 0.3, -0.4) }, { p: [-0.12, 1.95, -0.5], q: q(1.3, Math.PI / 2 - 0.2, 0.6) }] }; MM.place(X + 0.9, MM.terrainH(X + 0.9, 0.6) + 0.95, 0.7); MM.step(1 / 72); MM.render(); }, MM_MIRROR_X);
+  await A.p.screenshot({ path: SHOTS + 'gorilla_style.png' });
+  // first-person view of your own hands (3 fingers + thumb, furry forearms)
+  await A.p.evaluate(() => { const T3 = MM.THREE, q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q(-0.32, 0, 0), hands: [{ p: [-0.21, 1.36, -0.46], q: new T3.Quaternion().setFromEuler(new T3.Euler(-0.35, 0.35, 0, 'YXZ')).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 0, 1), Math.PI / 2)).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 1, 0), -Math.PI / 2)).toArray() }, { p: [0.21, 1.36, -0.46], q: new T3.Quaternion().setFromEuler(new T3.Euler(-0.35, -0.35, 0, 'YXZ')).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 0, 1), -Math.PI / 2)).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 1, 0), Math.PI / 2)).toArray() }] }; MM.place(1.5, 0.95, 3); MM.step(1 / 72); MM.render(); });
+  await A.p.screenshot({ path: SHOTS + 'hands_fp.png' });
   await shot('night_fireflies.png', [2, 1.3, 6], -0.6, 0.05, 0.78);
   await shot('sunset.png', [-10, 4.5, 12], -2.4, 0.0, 0.485);
   await A.ctx.close();
@@ -235,7 +258,7 @@ const LOCAL_TRANSPORT = () => {
     const r1 = await P1.p.evaluate(() => MM.remoteList()[0]), me2 = await P2.p.evaluate(() => MM.headW().toArray());
     const err = Math.hypot(r1.head[0] - me2[0], r1.head[1] - me2[1], r1.head[2] - me2[2]);
     ok(err < 0.25, `remote head pose synced at 15 Hz and interpolated (err ${err.toFixed(3)} m)`);
-    ok(r1.name === 'Bongo' && r1.tag === 'Bongo', 'floating name tag above the remote gorilla shows the name set on the landing page');
+    ok(r1.name === 'Bongo' && r1.tag === 'Bongo', 'chest name tag on the remote gorilla shows the name set on the landing page');
     const [rate, fps] = await P1.p.evaluate(async () => { let f = 0, run = true; const tick = () => { f++; if (run) requestAnimationFrame(tick); }; requestAnimationFrame(tick); const a = MM.stats.posesSent; await new Promise(r => setTimeout(r, 2000)); run = false; return [(MM.stats.posesSent - a) / 2, f / 2]; });
     ok(rate >= Math.min(13, fps * 0.85) && rate <= 20, `pose send rate ${rate.toFixed(1)} Hz (target 15 Hz; headless page ran at ${fps.toFixed(0)} fps)`);
     await P1.p.waitForFunction(() => MM.NET.round >= 1 && MM.NET.infected.size === 1, null, { timeout: 15000 }).catch(() => { });
