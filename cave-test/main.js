@@ -2,6 +2,16 @@
 // CAVE TEST BUILD (/cave-test/): charged A-button jump, tunnel + domed cave, dark pillar chasm, cliff exit with ledges and a trigger vine.
 import * as THREE from '../vendor/three.module.js';
 import { Reflector } from '../vendor/addons/Reflector.js';
+// ---- DEBUG overlay support (test build only): last few errors, captured from the start. The hook is just a tiny array push.
+const DBG_BUILD = 'cave-test dbg1 · 2026-11-20'; // version / build tag shown in the DEBUG overlay
+const DBG_ERRS = [];
+const dbgErr = m => { try { m = String(m); DBG_ERRS.push(m.length > 160 ? m.slice(0, 159) + '…' : m); if (DBG_ERRS.length > 5) DBG_ERRS.shift(); } catch (e) { } };
+{
+  const ce = console.error;
+  console.error = function (...a) { dbgErr(a.length ? a.map(x => x instanceof Error ? x.message : typeof x === 'object' ? '[object]' : x).join(' ') : ''); return ce.apply(this, a); };
+  addEventListener('error', e => dbgErr('Error: ' + (e.message || (e.target && e.target.src) || 'script error')));
+  addEventListener('unhandledrejection', e => dbgErr('Unhandled: ' + (e.reason && e.reason.message || e.reason)));
+}
 const V3 = THREE.Vector3, Q = THREE.Quaternion, C3 = THREE.Color;
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -632,13 +642,18 @@ const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.0875), new THREE.Me
 wrist.position.set(0, 0.078, 0.14); wrist.rotation.x = -Math.PI / 2 + 0.35; myHands[0].add(wrist); // just behind the wrist cuff, raised clear of the hand and fur
 const muteBtn = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.012, 10), new THREE.MeshBasicMaterial({ color: 0x33dd55, fog: false }));
 muteBtn.position.set(0.088, 0.07, 0.13); myHands[0].add(muteBtn);
-wrist.visible = muteBtn.visible = false; // hidden until the left thumbstick is clicked
+const dbgBtnCv = document.createElement('canvas'); dbgBtnCv.width = 128; dbgBtnCv.height = 56; // DEBUG touch button, left of the wrist panel (test build)
+const dbgBtnTex = new THREE.CanvasTexture(dbgBtnCv); dbgBtnTex.colorSpace = THREE.SRGBColorSpace;
+const dbgBtn = new THREE.Mesh(new THREE.PlaneGeometry(0.046, 0.0201), new THREE.MeshBasicMaterial({ map: dbgBtnTex, fog: false }));
+dbgBtn.position.set(-0.099, 0.078, 0.14); dbgBtn.rotation.x = wrist.rotation.x; myHands[0].add(dbgBtn);
+wrist.visible = muteBtn.visible = dbgBtn.visible = false; // hidden until the left thumbstick is clicked
 
 // ---------- input: real WebXR, desktop fallback, or scripted fake XR for tests ----------
 const DESK = { yaw: 0, pitch: -0.15, keys: new Set(), ph: 0, cph: 0, jumpT: 9, jumpLatch: false };
 function emptyInput() { return { head: new V3(0, 1.6, 0), headQ: new Q(), hands: [{ p: new V3(-0.25, 0.9, -0.25), q: new Q(), grip: false }, { p: new V3(0.25, 0.9, -0.25), q: new Q(), grip: false }] }; }
 function readVR(frame) {
-  const inp = emptyInput(); const ref = renderer.xr.getReferenceSpace(); const session = renderer.xr.getSession();
+  const inp = emptyInput(), sim = !renderer.xr.isPresenting && MM.xrSim; // MM.xrSim: scripted XRFrame/inputSources for tests (same code path as the headset)
+  const ref = sim ? sim.ref : renderer.xr.getReferenceSpace(), session = sim ? sim.session : renderer.xr.getSession(); if (sim) frame = sim.frame;
   if (!frame || !ref || !session) return null;
   const vp = frame.getViewerPose(ref); if (!vp) return null;
   const tp = vp.transform.position, to = vp.transform.orientation;
@@ -649,7 +664,7 @@ function readVR(frame) {
     const gp = frame.getPose(src.gripSpace, ref); if (!gp) continue;
     const p = gp.transform.position, o = gp.transform.orientation;
     inp.hands[i].p.set(p.x, p.y, p.z); inp.hands[i].q.set(o.x, o.y, o.z, o.w);
-    const b = src.gamepad && src.gamepad.buttons; inp.hands[i].grip = !!(b && b[1] && b[1].value > 0.5); inp.hands[i].stick = !!(b && b[3] && b[3].pressed); inp.hands[i].trig = !!(b && b[0] && b[0].value > 0.5); if (i === 1) inp.a = !!(b && b[4] && b[4].pressed); inp.hands[i].src = src; found[i] = true;
+    const b = src.gamepad && src.gamepad.buttons; inp.hands[i].grip = !!(b && b[1] && b[1].value > 0.5); inp.hands[i].stick = !!(b && b[3] && b[3].pressed); inp.hands[i].trig = !!(b && b[0] && b[0].value > 0.5); if (i === 1) inp.a = !!(b && b[4] && (b[4].pressed || b[4].value > 0.5)); else inp.y = !!(b && b[5] && (b[5].pressed || b[5].value > 0.5)); // xr-standard: [4] = A (right), [5] = Y (left) inp.hands[i].src = src; found[i] = true;
   }
   for (let i = 0; i < 2; i++) if (!found[i]) inp.hands[i].p.copy(inp.head).add(new V3(i ? 0.25 : -0.25, -0.7, -0.2));
   for (const h of inp.hands) h.p.y -= HAND_DROP; // virtual hand hangs a bit below the controller
@@ -684,13 +699,14 @@ function readDesk(dt) {
     h.q.copy(inp.headQ); h.trig = climb && h.grip; // E also squeezes the triggers (cliff vine)
   }
   inp.a = k.has('KeyF'); // hold F = hold A (charged jump)
+  inp.y = k.has('KeyY'); // Y = menu (flat page: opens it; choose with keys 1-5)
   return inp;
 }
 function readFake() {
   const f = MM.fake, inp = emptyInput();
   inp.head.fromArray(f.head || [0, 1.6, 0]); if (f.headQ) inp.headQ.fromArray(f.headQ);
   for (let i = 0; i < 2; i++) { const h = f.hands && f.hands[i]; if (h) { inp.hands[i].p.fromArray(h.p); inp.hands[i].grip = !!h.grip; if (h.q) inp.hands[i].q.fromArray(h.q); inp.hands[i].stick = !!h.stick; inp.hands[i].trig = !!h.trig; } }
-  inp.a = !!(f.a || (f.hands && f.hands[1] && f.hands[1].a));
+  inp.a = !!(f.a || (f.hands && f.hands[1] && f.hands[1].a)); inp.y = !!(f.y || (f.hands && f.hands[0] && f.hands[0].y));
   for (const h of inp.hands) h.p.y -= HAND_DROP; // same offset as real controllers
   return inp;
 }
@@ -702,7 +718,10 @@ const PH = {
 };
 // charged jump (A on the right controller): hold to charge (full at 3 s), hands planted, camera sinks; release = push off
 const JUMP = { charging: false, t: 0, c: 0, sink: 0, onVine: false, plant: [new V3(), new V3()], push: 0, blend: 0, last: null, count: 0,
-  FULL: 3.0, SINK: 0.3, VH: 4.45, VU: 4.85, K0: 0.3, PUSH: 0.18, BLEND: 0.15 };
+  FULL: 3.0, SINK: 0.3, VH: 4.66, VU: 5.08, K0: 0.3, PUSH: 0.18, BLEND: 0.15,
+  GRACE: 0.3,  // support may flicker for this long (head bob on a real headset lifts the body off the floor for a frame) without losing the charge
+  FLY: 1.6,    // after take-off the hands don't touch surfaces until you land (max this long), so dangling controllers can't snag the pillar side and kill the jump
+  wait: false, fly: 0 };
 JUMP.scale = c => JUMP.K0 + (1 - JUMP.K0) * c * c * c;               // launch speed scale: steep near the top, so only a full charge reaches the longest gaps
 JUMP.speed = c => ({ h: JUMP.VH * JUMP.scale(c), u: JUMP.VU * JUMP.scale(c) });
 const _n = new V3(), _p = new V3();
@@ -722,7 +741,7 @@ const isClimb = (col, p) => typeof col.climb === 'function' ? col.climb(p) : col
 function spawn(inp) {
   const a = Math.random() * Math.PI * 2, r = 0.4 + Math.random() * 0.8, sx = Math.cos(a) * r, sz = Math.sin(a) * r; // centre of the clearing (small jitter so players don't overlap)
   rig.position.set(sx - inp.head.x, terrainH(sx, sz) + BODY_OFF + BODY_R + 0.02 - inp.head.y, sz - inp.head.z);
-  PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true; MM.stats.spawns = (MM.stats.spawns || 0) + 1; PH.lastSup = PH.simT; JUMP.charging = false; JUMP.sink = 0; JUMP.push = 0; JUMP.blend = 0;
+  PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true; MM.stats.spawns = (MM.stats.spawns || 0) + 1; PH.lastSup = PH.simT; JUMP.charging = false; JUMP.sink = 0; JUMP.push = 0; JUMP.blend = 0; JUMP.fly = 0;
 }
 function physStep(dt, inp, now) {
   const P = rig.position;
@@ -732,7 +751,6 @@ function physStep(dt, inp, now) {
   for (let i = 0; i < 2; i++) {
     const h = PH.hands[i], ih = inp.hands[i];
     const hw = ih.p.clone().add(P);
-    if (inp.noHands) { h.anch = false; h.gripAnch = false; h.contact = false; h.slip = false; continue; } // hands planted for a charged jump: they don't push
     if (h.vine && !(h.vine.trig ? ih.trig : ih.grip)) { h.vine.held--; h.vine = null; sfx('whoosh'); }
     if (!h.vine && (ih.grip || ih.trig) && !h.anch) {
       for (const v of VINES) {
@@ -742,6 +760,7 @@ function physStep(dt, inp, now) {
       }
     }
     if (h.vine) { h.contact = false; continue; }
+    if (inp.noHands) { h.anch = false; h.gripAnch = false; h.contact = false; h.slip = false; continue; } // charged jump (planted / in flight): hands don't touch rock
     const q = nearest(hw);
     h.contact = q.d < HR + 0.01; h.col = q.col;
     if (h.anch) {
@@ -819,7 +838,7 @@ function panner(ctx, pos, ref = 2, roll = 1.2, model = 'equalpower') { return ne
 function startAudio() {
   if (AU.ctx) { AU.ctx.resume(); return; }
   let ctx; try { ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
-  AU.ctx = ctx; AU.master = ctx.createGain(); AU.master.gain.value = 0.9; AU.master.connect(ctx.destination);
+  AU.ctx = ctx; AU.out = ctx.createGain(); AU.out.connect(ctx.destination); AU.master = ctx.createGain(); AU.master.gain.value = MUSIC.on ? 0.9 : 0; AU.master.connect(AU.out); // AU.master = game sound (menu 'Music' switch); voice chat bypasses it
   const nb = noiseBuf(ctx, 3); AU.nb = nb; AU.sources = [];
   const loop = (f, type, q, gain, dest) => { const s = ctx.createBufferSource(); s.buffer = nb; s.loop = true; const fl = ctx.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const g = ctx.createGain(); g.gain.value = gain; s.connect(fl).connect(g).connect(dest); s.start(0, Math.random() * 2); return g; };
   AU.wind = loop(320, 'lowpass', 0.5, 0.05, AU.master); const lfo = ctx.createOscillator(); lfo.frequency.value = 0.08; const lg = ctx.createGain(); lg.gain.value = 0.035; lfo.connect(lg).connect(AU.wind.gain); lfo.start();
@@ -892,7 +911,7 @@ function attachVoice(stream, id) {
   const src = ctx.createMediaStreamSource(stream);
   const pn = panner(ctx, r.headPos, 1.2, 1.6, 'HRTF'); pn.maxDistance = 30;
   const g = ctx.createGain(); g.gain.value = 1.6;
-  src.connect(g).connect(pn).connect(AU.master);
+  src.connect(g).connect(pn).connect(AU.out); // voice chat is not affected by the menu's sound switch
   r.voice = { el, src, pn, g, stream };
 }
 
@@ -1103,28 +1122,35 @@ const MM = window.MM = {
 const handsW = [new V3(), new V3()];
 let GRIP_BITS = 0;
 const _jf = new V3(), _jr = new V3(), _je = new THREE.Euler();
+function jumpLaunch(inp) { // push off (on release, or automatically when the charge is full)
+  const J = JUMP, P = rig.position; J.charging = false; const sp = J.speed(J.c);
+  PH.V.copy(_jf).multiplyScalar(sp.h); PH.V.y = sp.u; // forward = where the head is looking (yaw only)
+  if (J.onVine) { for (const h of PH.hands) { if (h.vine) { h.vine.held--; h.vine = null; } } J.noGrab = 0.4; }
+  else { J.push = J.PUSH; P.y += 0.03; }
+  for (const h of PH.hands) { h.anch = false; h.gripAnch = false; }
+  PH.anyAnch = false; PH.hist.length = 0; J.fly = J.FLY; J.count++; J.last = { c: J.c, h: sp.h, u: sp.u, t: J.t, auto: J.c >= 1, dir: [_jf.x, _jf.z] }; sfx('whoosh'); haptic(inp.hands[1], 0.3 + 0.6 * J.c, 60);
+}
 function jumpTick(dt, inp) {
-  const J = JUMP, P = rig.position, vineHeld = PH.hands.some(h => h.vine), support = PH.grounded || PH.anyAnch || vineHeld;
+  const J = JUMP, P = rig.position, vineHeld = PH.hands.some(h => h.vine);
+  const support = PH.grounded || PH.anyAnch || vineHeld || PH.simT - (PH.lastSup ?? -9) < J.GRACE; // brief flickers (head bob) keep the charge
   _je.setFromQuaternion(inp.headQ, 'YXZ'); _jf.set(-Math.sin(_je.y), 0, -Math.cos(_je.y)); _jr.set(-_jf.z, 0, _jf.x);
-  if (inp.a) {
-    if (!J.charging && support && !J.push) {
-      J.charging = true; J.t = 0; J.onVine = vineHeld;
+  if (!(inp.aRaw ?? inp.a)) J.wait = false; // after an automatic full-charge launch, A must be released before a new charge
+  if (inp.a && !J.wait) {
+    if (!J.charging && support && !J.push && !(J.fly > 0 && !PH.grounded && !vineHeld)) {
+      J.charging = true; J.t = 0; J.c = 0; J.onVine = vineHeld;
       if (!J.onVine) { const gy = inp.head.y + P.y - BODY_OFF - BODY_R + HR; for (let i = 0; i < 2; i++) J.plant[i].copy(inp.head).add(P).addScaledVector(_jf, 0.34).addScaledVector(_jr, i ? 0.24 : -0.24).setY(gy); }
     }
     if (J.charging) {
-      if (!support) { J.charging = false; } // walked off / let go: charge lost
-      else { J.t += dt; J.c = Math.min(1, J.t / J.FULL); if (!J.onVine) J.sink = J.SINK * J.c; }
+      if (!support) { J.charging = false; if (!J.onVine) J.blend = J.BLEND; } // walked off for real: charge lost, hands ease back to the controllers (no snapping)
+      else {
+        J.t += dt; J.c = Math.min(1, J.t / J.FULL); if (!J.onVine) { J.sink = J.SINK * J.c; PH.V.x = 0; PH.V.z = 0; } // crouched with hands planted: you stay put
+        if (J.c >= 1) { jumpLaunch(inp); J.wait = true; } // full charge (3 s): jumps by itself
+      }
     }
-  } else if (J.charging) { // release: push off
-    J.charging = false; const sp = J.speed(J.c);
-    PH.V.copy(_jf).multiplyScalar(sp.h); PH.V.y = sp.u;
-    if (J.onVine) { for (const h of PH.hands) { if (h.vine) { h.vine.held--; h.vine = null; } } J.noGrab = 0.4; }
-    else { J.push = J.PUSH; P.y += 0.03; }
-    for (const h of PH.hands) { h.anch = false; h.gripAnch = false; }
-    PH.anyAnch = false; PH.hist.length = 0; J.count++; J.last = { c: J.c, h: sp.h, u: sp.u, t: J.t }; sfx('whoosh'); haptic(inp.hands[1], 0.3 + 0.6 * J.c, 60);
-  }
+  } else if (J.charging) jumpLaunch(inp); // released early: partial jump
   if (!J.charging) J.sink = Math.max(0, J.sink - dt * 2.0);
   J.noGrab = Math.max(0, (J.noGrab || 0) - dt);
+  if (J.fly > 0) { J.fly = Math.max(0, J.fly - dt); if ((PH.grounded && J.fly < J.FLY - 0.15) || vineHeld) J.fly = 0; } // landed / caught a vine: hands work again
   // hands: planted on the ground while charging, still pressing down for a moment after take-off, then back to the controllers
   const planted = J.charging && !J.onVine;
   if (!planted && J.push > 0) { J.push = Math.max(0, J.push - dt); if (!J.push) J.blend = J.BLEND; }
@@ -1134,15 +1160,17 @@ function jumpTick(dt, inp) {
     for (let i = 0; i < 2; i++) inp.hands[i].p.lerp(_jr.copy(J.plant[i]).sub(P), k);
     _jr.set(-_jf.z, 0, _jf.x); inp.noHands = true;
   }
+  if (J.fly > 0) inp.noHands = true; // in flight: hands can still catch a vine, but don't bump into rock
   J.held = !!inp.a;
 }
 const _hw = new V3(), _bw = new V3();
 function update(dt, frame) {
   const now = performance.now(), t = (now - clock0) / 1000, u0 = now;
   let inp = null;
-  if (MM.fake) inp = readFake(); else if (renderer.xr.isPresenting) inp = readVR(frame); else inp = readDesk(dt);
+  if (MM.fake) inp = readFake(); else if (renderer.xr.isPresenting || MM.xrSim) inp = readVR(frame); else inp = readDesk(dt);
   if (!inp) return;
   if (!PH.spawned) spawn(inp);
+  menuInput(inp); // Y menu: toggles; while open, A / triggers / grips and hand contact are ignored
   jumpTick(dt, inp);
   physics(dt, inp, now / 1000); lastInp = inp;
   if (!renderer.xr.isPresenting) { camera.position.copy(inp.head); camera.quaternion.copy(inp.headQ); }
@@ -1158,12 +1186,14 @@ function update(dt, frame) {
   _fpE.setFromQuaternion(inp.headQ, 'YXZ'); _fpQ.setFromEuler(_fpY.set(0, _fpE.y, 0));
   for (let i = 0; i < 2; i++) poseArm(i, myArms[i].u, myArms[i].f, null, headW, _fpQ, handsW[i], inp.hands[i].q);
   // left thumbstick click (edge) shows/hides the wrist info panel and its mic dot
-  const stick = !!inp.hands[0].stick; if (stick && !MM._stickPrev) { wrist.visible = muteBtn.visible = !wrist.visible; wristDirty = true; } MM._stickPrev = stick;
+  const stick = !!inp.hands[0].stick; if (stick && !MM._stickPrev) { wrist.visible = muteBtn.visible = dbgBtn.visible = !wrist.visible; wristDirty = true; } MM._stickPrev = stick;
   // wrist mute button: touch it with the right hand (only while the panel is shown)
   myHands[0].updateMatrixWorld(true); muteBtn.getWorldPosition(_bw);
   const near = muteBtn.visible && handsW[1].distanceTo(_bw) < 0.05;
   if (near && !MM._btnLatch && now - (MM._btnT || 0) > 600) { setMute(!VOICE.muted); MM._btnT = now; }
   MM._btnLatch = near;
+  menuTouch(now);
+  if (dbgBtn.visible) { dbgBtn.getWorldPosition(_bw); const nd = handsW[1].distanceTo(_bw) < 0.045; if (nd && !MM._dbgLatch && now - (MM._dbgT || 0) > 600) { dbgSet(!DBG.on); MM._dbgT = now; } MM._dbgLatch = nd; } // touch DEBUG with the right hand (wrist panel shown)
   const feet = headW.clone(); feet.y -= BODY_OFF + BODY_R;
   updateBananas(t, [handsW[0], handsW[1], headW]);
   shopTick(now, headW);
@@ -1204,20 +1234,21 @@ function frameFn(time, frame) {
   visuals();
   renderer.render(scene, camera);
   frameMs.push(performance.now() - t0); if (frameMs.length > 240) frameMs.shift();
+  if (DBG.on) dbgFrame(now, performance.now() - t0); // DEBUG overlay: nothing at all runs here while it is off
 }
 renderer.setAnimationLoop(frameFn);
 MM.step = (dt = 1 / 72, n = 1) => { for (let i = 0; i < n; i++) update(dt, null); };
 MM.render = () => { visuals(); renderer.render(scene, camera); };
 MM.outOfBounds = (x, y, z) => outOfBounds(new V3(x, y, z));
 MM.respawn = () => { const inp = MM.fake ? readFake() : emptyInput(); lastInp = inp; spawn(inp); };
-MM.place = (x, y, z) => { const inp = MM.fake ? readFake() : emptyInput(); rig.position.set(x - inp.head.x, y - inp.head.y, z - inp.head.z); PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true; PH.lastSup = PH.simT; JUMP.charging = false; JUMP.sink = 0; JUMP.push = 0; JUMP.blend = 0; lastInp = inp; };
+MM.place = (x, y, z) => { const inp = MM.fake ? readFake() : emptyInput(); rig.position.set(x - inp.head.x, y - inp.head.y, z - inp.head.z); PH.V.set(0, 0, 0); PH.hist.length = 0; PH.hands.forEach(h => { h.anch = false; if (h.vine) h.vine.held--; h.vine = null; }); PH.anyAnch = false; PH.spawned = true; PH.lastSup = PH.simT; JUMP.charging = false; JUMP.sink = 0; JUMP.push = 0; JUMP.blend = 0; JUMP.fly = 0; lastInp = inp; };
 MM.headW = () => (lastInp ? lastInp.head.clone() : new V3(0, 1.6, 0)).add(rig.position);
 MM.handsW = () => handsW.map(h => h.toArray());
 MM.muteBtnW = () => { myHands[0].updateMatrixWorld(true); return muteBtn.getWorldPosition(new V3()).toArray(); };
 MM.myHands = myHands; MM.BATT = BATT; MM.drawWrist = () => drawWrist(performance.now()); MM.wristShown = () => wrist.visible && muteBtn.visible; MM.skyColor = () => scene.background.getHexString(); MM.starsOp = () => (stars.visible ? starMat.opacity : 0); MM.stars = stars; MM.myArms = myArms; MM.HAND_DROP = HAND_DROP; MM.ARM = { L1: ARM_L1, L2: ARM_L2, SHOULDER, WRIST_LOCAL };
 MM.setMute = setMute; MM.joinNet = joinNet; MM.startAudio = startAudio; MM.AU = AU; MM.startVoice = startVoice;
 MM.renderInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries });
-MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, grip: r.avatar.grip, name: r.name, tag: r.avatar.tag.userData.text, color: r.color, cos: r.avatar.cosKey, matColor: r.avatar.mat.color.getHexString(), visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));
+MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, grip: r.avatar.grip, hands: r.hands.map(h => h.toArray()), name: r.name, tag: r.avatar.tag.userData.text, color: r.color, cos: r.avatar.cosKey, matColor: r.avatar.mat.color.getHexString(), visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));
 
 // ---------- landing page / session ----------
 const params = new URLSearchParams(location.search);
@@ -1263,6 +1294,8 @@ addEventListener('keydown', e => {
   if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
   DESK.keys.add(e.code); if (e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyM' && GAME.playing) setMute(!VOICE.muted);
+  if (MENU.open && /^Digit[1-5]$/.test(e.code)) menuDo(MENU_ITEMS[+e.code.slice(5) - 1].id);
+  if (e.code === 'Backquote') dbgSet(!DBG.on); // ` toggles the DEBUG overlay (test build)
   if (e.code === 'Escape' && GAME.playing && !renderer.xr.isPresenting) showLanding();
 });
 addEventListener('keyup', e => DESK.keys.delete(e.code));
@@ -1582,6 +1615,9 @@ class CxB {
   build() { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3)); g.computeVertexNormals(); g.computeBoundingSphere(); return g; }
 }
 const cxMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide });
+// inside the mountain the fog always fades to BLACK (never to the sky colour), so the caves read dark from any distance at any time of day
+const cxMatIn = cxMat.clone(); cxMatIn.customProgramCacheKey = () => 'cxMatIn-blackfog';
+cxMatIn.onBeforeCompile = sh => { sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', '#ifdef USE_FOG\n#ifdef FOG_EXP2\nfloat fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );\n#else\nfloat fogFactor = smoothstep( fogNear, fogFar, vFogDepth );\n#endif\ngl_FragColor.rgb = mix( gl_FragColor.rgb, vec3( 0.0 ), fogFactor );\n#endif'); };
 const CXG = { in: new THREE.Group(), rt: new THREE.Group(), out: new THREE.Group() }; // big cave + chasm | ledge chamber + side tunnel | cliff, ledges, ocean
 for (const g of Object.values(CXG)) { g.visible = false; scene.add(g); }
 const ROCK_C = '#4d443c', ROCK_F = '#57493d', CLIFF = '#b9b3a9';
@@ -1638,7 +1674,7 @@ function archPortal(b, cu, cv0, w, h, a, place) { // flat plate with an arch-sha
     b.add(new THREE.CircleGeometry(CX.PR, 9).rotateX(-Math.PI / 2), '#b3a894', M4(new V3(pc.x, CXF + 0.004, pc.z)), 0.1);
     addCol('rock', p => { const dxz = Math.hypot(p.x - pc.x, p.z - pc.z) - CX.PR, dy = Math.max(p.y - CXF, CXF - 60 - p.y); return Math.min(Math.max(dxz, dy), 0) + Math.hypot(Math.max(dxz, 0), Math.max(dy, 0)); }, new V3(pc.x, CXF - 30, pc.z), 31, false, { cave: 'pillar' }); // smooth: you can't climb a pillar, you have to land on it
   }
-  const m = new THREE.Mesh(b.build(), cxMat); CXG.in.add(m); CX.inTris = m.geometry.attributes.position.count / 3;
+  const m = new THREE.Mesh(b.build(), cxMatIn); CXG.in.add(m); CX.inTris = m.geometry.attributes.position.count / 3;
   // glowing crystals so the big cave reads
   const gb = new CxB(77);
   for (let i = 0; i < 7; i++) { const a = i * 0.9 + 0.3, x = dc.x + dr.x * 0.9 * Math.sin(a), z = dc.z + dr.z * 0.88 * Math.cos(a); if (z < CX.ledgeZ + 1.5 || z > t.vz1 - 1.5) continue; for (let k = 0; k < 3; k++) gb.add(new THREE.OctahedronGeometry(0.12 + 0.06 * k, 0).scale(0.6, 1.8, 0.6), i % 2 ? '#7fe8ff' : '#c49bff', M4(new V3(x + 0.15 * (k - 1), CXF + 0.25 + 0.05 * k, z), EUL(0.2 * (k - 1), 0, 0.25 * (k - 1))), 0.1); }
@@ -1656,7 +1692,7 @@ function archPortal(b, cu, cv0, w, h, a, place) { // flat plate with an arch-sha
   b.grid(8, 6, (i, j) => new V3(-3.6 + 13.2 * i / 8, CXF - 30 * (j / 6) ** 1.5, CX.endEdge + (j ? 0.25 * cxNoise(i * 2.1, j, 4) : 0)), ROCK_C, 0.1); // ledge face below
   b.grid(8, 3, (i, j) => new V3(-3.6 + 13.2 * i / 8, CXF + 7 * j / 3, CX.endEdge - 0.05), ROCK_C, 0.12, null, (i, j) => j < 2 && i >= 3 && i < 5); // rock around the chamber opening
   archTube(b, CX.rt, true, CX.rt.vx0 - 0.01, CX.rt.vx1, 5);
-  const m = new THREE.Mesh(b.build(), cxMat); CXG.rt.add(m);
+  const m = new THREE.Mesh(b.build(), cxMatIn); CXG.rt.add(m);
   // pitch-black shell around the chasm + chamber: looking into the void from anywhere (cave, tunnel, cliff mouth) shows black, never sky
   const vb = new CxB(1), X0 = CX.chasm.c.x - CX.chasm.h.x - 0.1, X1 = CX.chasm.c.x + CX.chasm.h.x + 0.1, Y0 = CXF - 61, Y1 = CXF + 7.2, Z0 = CX.ledgeZ, Z1 = z1 - 0.7;
   const q = (a, b, c, d) => vb.tri([a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z], '#000000', 0);
@@ -1696,6 +1732,24 @@ function archPortal(b, cu, cv0, w, h, a, place) { // flat plate with an arch-sha
   const ocean = new THREE.Mesh(new THREE.PlaneGeometry(16000, 16000, 1, 1).rotateX(-Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0x2c74b2, emissive: 0x0b2c48 }));
   ocean.position.set(2500, CX.ocean, 2500); CXG.out.add(ocean); CX.oceanMesh = ocean;
 }
+// wall cave (cave 2, right of the waterfall) lined in fog-free near-black: one inside-out box (floor, ceiling, sides, back; no front face),
+// so every sightline into the opening, from any angle or distance, ends on black. Its back face plugs the tunnel only while the tunnel is culled.
+const CAVE2_DARK = (() => {
+  const k = CAVES[1], back = k.c.z - k.h.z, front = -HALF, e = 0.012;
+  const g = new THREE.BoxGeometry(k.h.x * 2 - 2 * e, k.h.y * 2 - 2 * e, front - back + 0.05);
+  const lin = new THREE.MeshBasicMaterial({ color: 0x050506, fog: false, side: THREE.BackSide });
+  const plug = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false, side: THREE.BackSide });
+  const none = new THREE.MeshBasicMaterial({ visible: false });
+  g.clearGroups(); g.addGroup(0, 24, 0); g.addGroup(24, 6, 1); g.addGroup(30, 6, 2); // box faces: +x -x +y -y (one draw), +z = open front, -z = back plug
+  const m = new THREE.Mesh(g, [lin, none, plug]);
+  m.position.set(k.c.x, k.floor + k.h.y, (front + back - 0.05) / 2); m.renderOrder = -1; scene.add(m);
+  // black collar just behind the wall face: the rock tiles around the opening leave gaps (seen from the side); behind them is open sky
+  const W = k.h.x + 2.6, H0 = 1.8, H1 = k.h.y * 2 + 2.4, sh = new THREE.Shape(); sh.moveTo(-W, -H0); sh.lineTo(W, -H0); sh.lineTo(W, H1); sh.lineTo(-W, H1); sh.lineTo(-W, -H0);
+  const hole = new THREE.Path(); hole.moveTo(-k.h.x, 0); hole.lineTo(-k.h.x, k.h.y * 2); hole.lineTo(k.h.x, k.h.y * 2); hole.lineTo(k.h.x, 0); hole.lineTo(-k.h.x, 0); sh.holes.push(hole);
+  const collar = new THREE.Mesh(new THREE.ShapeGeometry(sh), new THREE.MeshBasicMaterial({ color: 0x000000, fog: false, side: THREE.DoubleSide }));
+  collar.position.set(k.c.x, k.floor, front - 0.05); scene.add(collar);
+  return { mesh: m, plug, collar };
+})();
 // zone fog: jungle -> dim tunnel -> dark cave -> pitch-black chasm (each pillar barely visible from the one before) -> daylight cliff
 const FOG_CAVE = new C3('#07080b'), FOG_CHASM = new C3('#000000'), _fc = new C3();
 const FOGS = { base: [18, 75], cave: [3, 24], chasm: [0.5, 5.8], out: [220, 2700] };
@@ -1721,6 +1775,7 @@ function updateCave(h) {
   // culling: each part only when you're near it
   CXG.in.visible = h.distanceTo(CX_MOUTH) < 18 || (inside && z > CX.endEdge - 1 && x < 7.6);
   CXG.rt.visible = CXG.in.visible || (z < -58 && x > -6 && x < 80);
+  CAVE2_DARK.plug.visible = !CXG.in.visible; // tunnel culled: black back wall instead of seeing through to the sky
   CXG.out.visible = (z < -64 && x > 2) || (x > CX.faceX - 1 && z < -49);
   // deep in the mountain the jungle can't be seen: skip drawing it
   const deep = z < CX.tun.vz1 - 0.5 && x > -12;
@@ -1728,4 +1783,145 @@ function updateCave(h) {
   else if (_hid.size) { for (const o of _hid) o.visible = true; _hid.clear(); }
 }
 MM.CX = CX; MM.CXG = CXG; MM.CX_STATE = CX_STATE; MM.JUMP = JUMP; MM.cxInterior = p => cxInterior(new V3(...p)); MM.gorillaGeo = gorillaGeo; MM.GRIP = () => GRIP_BITS;
-MM.fogInfo = () => ({ near: scene.fog.near, far: scene.fog.far, color: scene.fog.color.getHexString(), zone: CX_STATE.zone });
+MM.CAVE2_DARK = CAVE2_DARK; MM.fogInfo = () => ({ near: scene.fog.near, far: scene.fog.far, color: scene.fog.color.getHexString(), zone: CX_STATE.zone });
+
+// ---------- DEBUG overlay (test build only) ----------
+// Off by default. ?debug=1 / ?debug=0 force it on / off (and are remembered); otherwise the last choice is remembered in localStorage ('mmcave_debug').
+// While off: no overlay objects exist, no canvas/texture updates, no renderer.info reads, no stats work (only a boolean check per frame + the tiny error hook).
+const DBG_KEY = 'mmcave_debug';
+const DBG = { on: false, slice: [], hist: [], n: 0, maxMs: 0, sumMs: 0, cpuMs: 0, t0: 0, updates: 0, mesh: null, cv: null, tex: null, el: null, text: '', lines: [] };
+function dbgArea(h) {
+  const z = CX_STATE.zone, F = CX.F, x = h.x, y = h.y;
+  if (z === 'tunnel') return 'tunnel';
+  if (z === 'cave') return 'big cave';
+  if (z === 'ledge') return 'big cave ledge';
+  if (z === 'end') return y < F - 0.5 ? 'chasm (falling)' : 'ledge chamber';
+  if (z === 'chasm') { if (y < F - 0.5) return 'chasm (falling)'; for (let i = 0; i < CX.pillars.length; i++) { const q = CX.pillars[i]; if (Math.hypot(x - q.x, h.z - q.z) < CX.PR + 0.25) return 'pillar ' + (i + 1); } return 'chasm'; }
+  if (z === 'sidetunnel') return 'side tunnel';
+  if (z === 'out') return PH.hands.some(q => q.vine) ? 'cliff vine' : y < F - 5 ? 'cliff (falling)' : x < 12 ? 'cliff lip' : y > F + 3 ? 'cliff long ledge' : 'cliff ledges';
+  if (sdBox(h, CAVES[0].c, CAVES[0].h) < 0.3) return 'shop cave';
+  if (sdBox(h, CAVES[1].c, CAVES[1].h) < 0.3) return 'wall cave';
+  return Math.hypot(x, h.z) < 8 ? 'spawn' : 'jungle';
+}
+const dbgFmtN = n => n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+function dbgBuildLines(w) { // w = max chars per error line
+  const ri = renderer.info, pm = performance.memory, a = DBG.slice, n = a.reduce((s, q) => s + q.n, 0), dt = a.reduce((s, q) => s + q.dt, 0);
+  const fps = dt > 0 ? n / dt : 0, avg = n ? dt / n * 1000 : 0, worst = Math.max(DBG.maxMs, ...DBG.hist), cpu = n ? a.reduce((s, q) => s + q.cpu, 0) / n : 0;
+  const h = _cp, area = dbgArea(h);
+  const L = [
+    'DEBUG  ' + DBG_BUILD,
+    'FPS ' + fps.toFixed(0) + '   frame ' + avg.toFixed(1) + ' ms   cpu ' + cpu.toFixed(1) + ' ms',
+    'worst frame (last 5 s): ' + worst.toFixed(1) + ' ms',
+    'JS heap: ' + (pm && pm.usedJSHeapSize ? (pm.usedJSHeapSize / 1048576).toFixed(1) + ' / ' + (pm.jsHeapSizeLimit / 1048576).toFixed(0) + ' MB' : 'n/a'),
+    'textures ' + ri.memory.textures + '  geometries ' + ri.memory.geometries + '  programs ' + (ri.programs ? ri.programs.length : 0),
+    'draw calls ' + ri.render.calls + '  triangles ' + dbgFmtN(ri.render.triangles),
+    'area: ' + area + '  (' + h.x.toFixed(1) + ', ' + h.y.toFixed(1) + ', ' + h.z.toFixed(1) + ')',
+    DBG_ERRS.length ? 'recent errors (' + DBG_ERRS.length + '):' : 'recent errors: none',
+  ];
+  for (const e of DBG_ERRS) L.push(' ! ' + (e.length > w ? e.slice(0, w - 1) + '…' : e));
+  return L;
+}
+function dbgDraw() { // rebuilds the text (a few times a second) and pushes it to the VR panel and the flat-page box
+  DBG.updates++;
+  const vr = DBG.mesh && wrist.visible, flat = DBG.el && !renderer.xr.isPresenting;
+  if (!vr && !flat) return;
+  if (vr) {
+    const L = dbgBuildLines(40), x = DBG.cv.getContext('2d'); DBG.lines = L;
+    x.fillStyle = 'rgba(6,14,10,0.92)'; x.fillRect(0, 0, 512, 368); x.strokeStyle = '#55ff88'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 364);
+    x.font = 'bold 21px monospace'; x.textAlign = 'left';
+    L.forEach((t, i) => { x.fillStyle = i === 0 ? '#ffe135' : t.startsWith(' !') ? '#ff8c8c' : t.startsWith('recent errors (') ? '#ffb4b4' : '#c9ffd8'; x.fillText(t, 12, 30 + i * 25); });
+    DBG.tex.needsUpdate = true;
+  }
+  if (flat) { const L = vr ? DBG.lines : dbgBuildLines(100); if (!vr) DBG.lines = L; DBG.el.textContent = L.join('\n'); }
+}
+function dbgFrame(now, cpu) { // per-frame bookkeeping while ON: interval + worst frame; the text refresh runs ~4x/s
+  if (!DBG.t0) { DBG.t0 = now; DBG.last = now; return; }
+  const iv = now - DBG.last; DBG.last = now; DBG.n++; DBG.sumMs += iv; DBG.cpuMs += cpu; if (iv > DBG.maxMs) DBG.maxMs = iv;
+  if (now - DBG.t0 >= 250) {
+    DBG.slice.push({ n: DBG.n, dt: (now - DBG.t0) / 1000, cpu: DBG.cpuMs }); if (DBG.slice.length > 4) DBG.slice.shift(); // last ~1 s for FPS / average
+    DBG.hist.push(DBG.maxMs); if (DBG.hist.length > 20) DBG.hist.shift(); // 20 x 250 ms = last 5 s for the worst frame
+    DBG.n = 0; DBG.sumMs = 0; DBG.cpuMs = 0; DBG.maxMs = 0; DBG.t0 = now;
+    dbgDraw();
+  }
+}
+function dbgPaintBtn() {
+  const x = dbgBtnCv.getContext('2d'); x.fillStyle = DBG.on ? '#1f8f4a' : '#3a3a40'; x.fillRect(0, 0, 128, 56); x.strokeStyle = DBG.on ? '#9bffc0' : '#8a8a92'; x.lineWidth = 5; x.strokeRect(3, 3, 122, 50);
+  x.fillStyle = '#fff'; x.font = 'bold 30px system-ui,sans-serif'; x.textAlign = 'center'; x.fillText('DEBUG', 64, 38); dbgBtnTex.needsUpdate = true;
+}
+function dbgSet(on, save = true) {
+  on = !!on; DBG.on = on; if (save) LS(DBG_KEY, on ? '1' : '0');
+  DBG.slice.length = DBG.hist.length = 0; DBG.n = DBG.maxMs = DBG.sumMs = DBG.cpuMs = DBG.t0 = 0;
+  if (on && !DBG.mesh) { // VR panel floating just beyond the wrist panel, tilted to face the viewer; flat-page box
+    DBG.cv = document.createElement('canvas'); DBG.cv.width = 512; DBG.cv.height = 368; DBG.tex = new THREE.CanvasTexture(DBG.cv); DBG.tex.colorSpace = THREE.SRGBColorSpace;
+    DBG.mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.1869), new THREE.MeshBasicMaterial({ map: DBG.tex, fog: false, transparent: true }));
+    DBG.mesh.position.set(0, 0.2, 0.08); wrist.add(DBG.mesh); // child of the wrist panel: shows whenever the wrist panel is shown
+    DBG.el = document.createElement('pre'); DBG.el.id = 'dbgBox';
+    DBG.el.style.cssText = 'position:fixed;right:8px;top:8px;z-index:9;margin:0;padding:8px 10px;font:12px/1.35 ui-monospace,Menlo,Consolas,monospace;color:#c9ffd8;background:rgba(6,14,10,.82);border:1px solid #55ff88;border-radius:8px;pointer-events:none;white-space:pre-wrap;max-width:min(560px,70vw);overflow:hidden';
+    document.body.appendChild(DBG.el); DBG.updates = 0; dbgDraw();
+  } else if (!on && DBG.mesh) {
+    wrist.remove(DBG.mesh); DBG.mesh.geometry.dispose(); DBG.mesh.material.dispose(); DBG.tex.dispose(); DBG.el.remove();
+    DBG.mesh = DBG.cv = DBG.tex = DBG.el = null; DBG.lines = [];
+  }
+  dbgPaintBtn(); const lb = $('dbgLand'), fb = $('dbgFlat'); const t = 'DEBUG: ' + (on ? 'ON' : 'OFF'); if (lb) lb.textContent = t + ' (tap to toggle)'; if (fb) fb.textContent = t;
+}
+{
+  const q = new URLSearchParams(location.search).get('debug'), saved = LS(DBG_KEY);
+  dbgSet(q === '1' ? true : q === '0' ? false : saved === '1', q === '1' || q === '0'); // only an explicit ?debug= overrides and re-saves
+  for (const id of ['dbgLand', 'dbgFlat']) { const el = $(id); if (el) el.onclick = () => dbgSet(!DBG.on); }
+}
+MM.DBG = DBG; MM.dbgSet = dbgSet; MM.dbgArea = () => dbgArea(_cp); MM.DBG_ERRS = DBG_ERRS; MM.DBG_BUILD = DBG_BUILD; MM.dbgBtn = dbgBtn; MM.dbgKey = DBG_KEY;
+
+// ---------- Y menu (test build): Music, Debug, Restart, Exit, Resume ----------
+// Y on the left controller opens/closes a panel floating in front of you (placed where you look when it opens, 0.55 m away). Touch a button with either hand.
+// There is no music track in the game, so "Music" switches all game sound (ambience + effects) on/off; voice chat is not affected. Remembered in localStorage.
+const MUSIC = { on: LS('mmcave_music') !== '0' };
+const MENU_ITEMS = [{ id: 'music' }, { id: 'debug' }, { id: 'restart' }, { id: 'exit' }, { id: 'resume' }];
+const MENU = { open: false, yPrev: false, mesh: null, cv: null, tex: null, latch: [false, false], t: 0, last: null, count: 0, W: 0.46, H: 0.4 };
+function menuLabel(id) { return id === 'music' ? 'Sound: ' + (MUSIC.on ? 'ON' : 'OFF') : id === 'debug' ? 'Debug: ' + (DBG.on ? 'ON' : 'OFF') : id === 'restart' ? 'Restart' : id === 'exit' ? 'Exit VR' : 'Resume'; }
+function menuDraw() {
+  const x = MENU.cv.getContext('2d'), W = 512, H = 445;
+  x.fillStyle = 'rgba(14,22,16,0.94)'; x.fillRect(0, 0, W, H); x.strokeStyle = '#ffd23f'; x.lineWidth = 6; x.strokeRect(3, 3, W - 6, H - 6);
+  x.fillStyle = '#ffd23f'; x.font = 'bold 34px system-ui,sans-serif'; x.textAlign = 'center'; x.fillText('MENU', W / 2, 44);
+  MENU_ITEMS.forEach((it, i) => { const y = 62 + i * 70; x.fillStyle = it.id === 'exit' ? '#7a2a22' : it.id === 'resume' ? '#2a6a3a' : '#2c3a4a'; x.fillRect(40, y, W - 80, 58); x.strokeStyle = '#e8f0ff'; x.lineWidth = 3; x.strokeRect(40, y, W - 80, 58); x.fillStyle = '#fff'; x.font = 'bold 32px system-ui,sans-serif'; x.fillText(menuLabel(it.id), W / 2, y + 41); });
+  x.fillStyle = '#cfe8cf'; x.font = '20px system-ui,sans-serif'; x.fillText('touch a button · Y closes', W / 2, H - 12);
+  MENU.tex.needsUpdate = true;
+}
+function menuSetOpen(open, inp) {
+  MENU.open = open; MENU.latch = [true, true]; MENU.t = PH.simT; // simulation clock (seconds)
+  if (open) {
+    if (!MENU.mesh) { MENU.cv = document.createElement('canvas'); MENU.cv.width = 512; MENU.cv.height = 445; MENU.tex = new THREE.CanvasTexture(MENU.cv); MENU.tex.colorSpace = THREE.SRGBColorSpace; MENU.mesh = new THREE.Mesh(new THREE.PlaneGeometry(MENU.W, MENU.H), new THREE.MeshBasicMaterial({ map: MENU.tex, fog: false })); MENU.mesh.renderOrder = 5; }
+    const e = new THREE.Euler().setFromQuaternion(inp.headQ, 'YXZ'), fw = new V3(-Math.sin(e.y), 0, -Math.cos(e.y));
+    MENU.mesh.position.copy(inp.head).addScaledVector(fw, 0.55); MENU.mesh.position.y -= 0.12; MENU.mesh.rotation.set(-0.2, e.y, 0, 'YXZ'); // head-locked at open time, in the rig (moves with you)
+    rig.add(MENU.mesh); menuDraw();
+    if (JUMP.charging) { JUMP.charging = false; JUMP.blend = JUMP.BLEND; } // opening the menu cancels a charge (no jump)
+  } else if (MENU.mesh) rig.remove(MENU.mesh);
+}
+function menuInput(inp) {
+  if (inp.y && !MENU.yPrev) menuSetOpen(!MENU.open, inp); MENU.yPrev = !!inp.y;
+  if (!MENU.open) return;
+  inp.aRaw = inp.a; inp.a = false; JUMP.wait = true; // no jump / charge while the menu is up (and none right after closing until A is released)
+  inp.hands.forEach((h, i) => { if (!PH.hands[i].vine) { h.grip = false; h.trig = false; } }); inp.noHands = true; // hands don't push off, climb or grab while choosing
+}
+const _mh = new V3();
+function menuTouch(now) { // either hand pressing into a button (from the front) selects it; edge-triggered per hand
+  if (!MENU.open || !MENU.mesh) return;
+  MENU.mesh.updateMatrixWorld(true);
+  for (let i = 0; i < 2; i++) {
+    MENU.mesh.worldToLocal(_mh.copy(handsW[i]));
+    let hit = null;
+    if (Math.abs(_mh.z) < 0.07 && Math.abs(_mh.x) < MENU.W / 2 * (432 / 512)) { const py = (0.5 - _mh.y / MENU.H) * 445; MENU_ITEMS.forEach((it, k) => { const y = 62 + k * 70; if (py >= y && py <= y + 58) hit = it.id; }); }
+    if (hit && !MENU.latch[i] && PH.simT - MENU.t > 0.35) { MENU.t = PH.simT; haptic(lastInp && lastInp.hands[i], 0.4, 30); menuDo(hit); }
+    MENU.latch[i] = !!hit;
+    if (!MENU.open) return;
+  }
+}
+function menuDo(id) {
+  MENU.last = id; MENU.count++; sfx('tap', 1);
+  if (id === 'music') { MUSIC.on = !MUSIC.on; LS('mmcave_music', MUSIC.on ? '1' : '0'); if (AU.master) AU.master.gain.value = MUSIC.on ? 0.9 : 0; menuDraw(); }
+  else if (id === 'debug') { dbgSet(!DBG.on); menuDraw(); }
+  else if (id === 'restart') { menuSetOpen(false); const inp = lastInp || (MM.fake ? readFake() : emptyInput()); spawn(inp); PH.lastSup = PH.simT; MM.stats.restarts = (MM.stats.restarts || 0) + 1; }
+  else if (id === 'exit') { menuSetOpen(false); const ses = renderer.xr.getSession(); if (ses) ses.end().catch(() => showLanding()); else showLanding(); }
+  else if (id === 'resume') menuSetOpen(false);
+}
+MM.MENU = MENU; MM.MUSIC = MUSIC; MM.menuDo = menuDo; MM.MENU_ITEMS = MENU_ITEMS;
+MM.menuBtnW = id => { const k = MENU_ITEMS.findIndex(it => it.id === id); const py = 62 + k * 70 + 29; MENU.mesh.updateMatrixWorld(true); return MENU.mesh.localToWorld(new V3(0, (0.5 - py / 445) * MENU.H, 0)).toArray(); };
