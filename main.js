@@ -547,6 +547,16 @@ function makeGorilla(color, name) {
     g.body.position.copy(head); g.body.position.y -= BODY_OFF - 0.05; g.body.quaternion.copy(yq);
     poseArm(0, g.arms[0], g.fores[0], g.hands[0], head, yq, hl, ql); poseArm(1, g.arms[1], g.fores[1], g.hands[1], head, yq, hr, qr);
   };
+  // cosmetics (shop items): hat/face on the head, body items on the torso; layers follow the parent (mirror avatar = layer 5)
+  g.cos = {}; g.cosKey = '{}';
+  g.setCos = cos => {
+    const key = JSON.stringify(cos || {}); if (key === g.cosKey) return; g.cosKey = key;
+    for (const sl of ['hat', 'face', 'body']) {
+      const id = cos && cos[sl], cur = g.cos[sl]; if (cur && cur.userData.id === id) continue;
+      if (cur) { cur.parent.remove(cur); g.cos[sl] = null; }
+      if (id && COS_GEO[id]) { const m = new THREE.Mesh(COS_GEO[id], COS_MAT), par = sl === 'body' ? g.body : g.head; m.userData.id = id; m.layers.mask = par.layers.mask; par.add(m); g.cos[sl] = m; }
+    }
+  };
   g.dispose = () => { scene.remove(g.group); mat.dispose(); g.tag.material.map.dispose(); g.tag.material.dispose(); g.tag.geometry.dispose(); };
   return g;
 }
@@ -568,9 +578,9 @@ const _fpE = new THREE.Euler(), _fpY = new THREE.Euler(), _fpQ = new Q();
 const wristCv = document.createElement('canvas'); wristCv.width = 256; wristCv.height = 160;
 const wristTex = new THREE.CanvasTexture(wristCv); wristTex.colorSpace = THREE.SRGBColorSpace;
 const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.0875), new THREE.MeshBasicMaterial({ map: wristTex, fog: false }));
-wrist.position.set(0, 0.05, 0.1); wrist.rotation.x = -Math.PI / 2 + 0.35; myHands[0].add(wrist);
+wrist.position.set(0, 0.078, 0.14); wrist.rotation.x = -Math.PI / 2 + 0.35; myHands[0].add(wrist); // just behind the wrist cuff, raised clear of the hand and fur
 const muteBtn = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.012, 10), new THREE.MeshBasicMaterial({ color: 0x33dd55, fog: false }));
-muteBtn.position.set(0.055, 0.045, 0.06); myHands[0].add(muteBtn);
+muteBtn.position.set(0.088, 0.07, 0.13); myHands[0].add(muteBtn);
 wrist.visible = muteBtn.visible = false; // hidden until the left thumbstick is clicked
 
 // ---------- input: real WebXR, desktop fallback, or scripted fake XR for tests ----------
@@ -824,7 +834,7 @@ function ensureRemote(id) {
 function removeRemote(id) { const r = NET.remotes.get(id); if (!r) return; r.avatar.dispose(); if (r.voice) { try { r.voice.src.disconnect(); r.voice.pn.disconnect(); r.voice.el.srcObject = null; } catch (e) { } } NET.remotes.delete(id); NET.infected.delete(id); hudDirty = true; }
 const leaderId = () => [NET.selfId, ...NET.remotes.keys()].sort()[0];
 const amLeader = () => leaderId() === NET.selfId;
-const myInfo = () => ({ name: ME.name, color: ME.color, t: Date.now() + NET.clockOff, lead: amLeader() });
+const myInfo = () => ({ name: ME.name, color: ME.color, cos: shopCos(), t: Date.now() + NET.clockOff, lead: amLeader() });
 const roundMsg = () => ({ round: NET.round, inf: [...NET.infected] });
 function leaveNet() { if (NET.room) { try { NET.room.leave(); } catch (e) { } } NET.room = null; for (const id of [...NET.remotes.keys()]) removeRemote(id); NET.send = null; }
 async function joinNet(code) {
@@ -839,7 +849,7 @@ async function joinNet(code) {
     room.onPeerJoin(id => { ensureRemote(id); sInfo(myInfo(), id); if (amLeader()) sRound(roundMsg(), id); if (VOICE.stream) room.addStream(VOICE.stream, id); });
     room.onPeerLeave(id => removeRemote(id));
     gPose((d, id) => { if (!Array.isArray(d) || d.length < 16) return; const r = ensureRemote(id); r.samples.push({ t: performance.now(), d }); if (r.samples.length > 10) r.samples.shift(); r.lastSeen = performance.now(); r.bananas = d[14] | 0; if (d[13] && d[15] === NET.round) NET.infected.add(id); });
-    gInfo((d, id) => { if (!d) return; const r = ensureRemote(id); r.name = cleanName(d.name); r.color = /^#[0-9a-f]{6}$/i.test(d.color) ? d.color : '#888888'; r.avatar.tag.userData.text = r.name; r.avatar.setColor(r.color); if (d.lead && id === leaderId() && typeof d.t === 'number') NET.clockOff = d.t - Date.now(); hudDirty = true; });
+    gInfo((d, id) => { if (!d) return; const r = ensureRemote(id); r.name = cleanName(d.name); r.color = /^#[0-9a-f]{6}$/i.test(d.color) ? d.color : '#888888'; r.avatar.tag.userData.text = r.name; r.avatar.setColor(r.color); r.avatar.setCos(cleanCos(d.cos)); if (d.lead && id === leaderId() && typeof d.t === 'number') NET.clockOff = d.t - Date.now(); hudDirty = true; });
     gRound(d => applyRound(d));
     gTag((d, id) => { nlog('tag-rx', id.slice(0, 4), d && d.target.slice(0, 4), d && d.round); if (d && d.round === NET.round && !NET.infected.has(d.target)) { NET.infected.add(d.target); if (d.target === NET.selfId) sfx('tag'); } });
     room.onPeerStream((stream, id) => attachVoice(stream, id));
@@ -927,7 +937,7 @@ const _bm = new THREE.Matrix4(), _bq = new Q(), _bs = new V3(), _bp = new V3(), 
 function updateBananas(t, pts) {
   BANANAS.forEach((b, i) => {
     if (!b.alive && t > b.respawn) b.alive = true;
-    if (b.alive) for (const p of pts) if (p.distanceTo(b.p) < 0.35) { b.alive = false; b.respawn = t + 60; ME.bananas++; sfx('banana'); hudDirty = wristDirty = true; break; }
+    if (b.alive) for (const p of pts) if (p.distanceTo(b.p) < 0.35) { b.alive = false; b.respawn = t + 60; ME.bananas++; shopEarn(1); sfx('banana'); hudDirty = wristDirty = true; break; }
     _bq.setFromEuler(_be.set(0.3, t * 1.5 + i, 0)); _bs.setScalar(b.alive ? 1.6 : 0.0001);
     _bm.compose(_bp.copy(b.p).setY(b.p.y + Math.sin(t * 2 + i) * 0.06), _bq, _bs); bananaMesh.setMatrixAt(i, _bm);
   });
@@ -1044,13 +1054,14 @@ function update(dt, frame) {
   MM._btnLatch = near;
   const feet = headW.clone(); feet.y -= BODY_OFF + BODY_R;
   updateBananas(t, [handsW[0], handsW[1], headW]);
+  shopTick(now, headW);
   updateCourse(now, feet, handsW);
   updateVines(dt, handsW);
   if (now - NET.lastTick > 500) { NET.lastTick = now; roundTick(now); }
   tagCheck(handsW);
   netSend(now, headW, inp.headQ, handsW[0], handsW[1]);
   const it = NET.infected.has(NET.selfId);
-  if (it !== MM._wasIt) { MM._wasIt = it; handMat.color.set(it ? LAVA : ME.color); handMat.emissive.set(it ? 0xff2200 : 0); handMat.emissiveIntensity = it ? 0.6 : 0; hudDirty = wristDirty = true; }
+  if (it !== MM._wasIt) { MM._wasIt = it; handMat.color.set(it ? LAVA : shopLook().color); handMat.emissive.set(it ? 0xff2200 : 0); handMat.emissiveIntensity = it ? 0.6 : 0; hudDirty = wristDirty = true; }
   MM.updateMs.push(performance.now() - u0); if (MM.updateMs.length > 240) MM.updateMs.shift();
 }
 const _cp = new V3();
@@ -1092,7 +1103,7 @@ MM.muteBtnW = () => { myHands[0].updateMatrixWorld(true); return muteBtn.getWorl
 MM.myHands = myHands; MM.BATT = BATT; MM.drawWrist = () => drawWrist(performance.now()); MM.wristShown = () => wrist.visible && muteBtn.visible; MM.skyColor = () => scene.background.getHexString(); MM.starsOp = () => (stars.visible ? starMat.opacity : 0); MM.stars = stars; MM.myArms = myArms; MM.HAND_DROP = HAND_DROP; MM.ARM = { L1: ARM_L1, L2: ARM_L2, SHOULDER, WRIST_LOCAL };
 MM.setMute = setMute; MM.joinNet = joinNet; MM.startAudio = startAudio; MM.AU = AU; MM.startVoice = startVoice;
 MM.renderInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries });
-MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, name: r.name, tag: r.avatar.tag.userData.text, color: r.color, visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));
+MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, name: r.name, tag: r.avatar.tag.userData.text, color: r.color, cos: r.avatar.cosKey, matColor: r.avatar.mat.color.getHexString(), visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));
 
 // ---------- landing page / session ----------
 const params = new URLSearchParams(location.search);
@@ -1175,13 +1186,250 @@ function updateMirror() {
   const toCam = _mp.clone().sub(MIRROR.mesh.position);
   const near = toCam.length() < MIRROR_RANGE && toCam.dot(MIRROR.normal) > 0.05;
   MIRROR.mesh.visible = near; // reflection pass only runs when close, in front, and (via frustum culling) on screen
+  const nearShop = updateShopMirror(_mp);
   const av = MIRROR.avatar;
-  av.group.visible = near && GAME.playing;
+  av.group.visible = (near || nearShop) && GAME.playing;
   if (!av.group.visible) return;
   camera.getWorldQuaternion(_mq);
-  if (av.color.getHexString() !== new C3(ME.color).getHexString()) av.setColor(ME.color);
+  const look = shopLook(); if (MM.mirrorTestColor) look.color = MM.mirrorTestColor; /* test hook: tint the reflection for pixel checks */ if (av.color.getHexString() !== new C3(look.color).getHexString()) av.setColor(look.color); av.setCos(look.cos);
   const it = NET.infected.has(NET.selfId); if (it !== av.it) av.apply(it);
   if (av.tag.userData.text !== ME.name) av.tag.userData.set(ME.name, av.it);
   av.pose(_mp, _mq, handsW[0], handsW[1], myHands[0].quaternion, myHands[1].quaternion);
 }
 MM.MIRROR = MIRROR; MM.MIRROR_LAYER = MIRROR_LAYER;
+
+// ---------- cosmetics shop "MONKEY MART" on the walls of the lower waterfall cave ----------
+// Bananas you pick up go into a persistent wallet (localStorage); the per-session banana count is unchanged.
+// Touch an item to try it on (see it in the shop mirror), press the big button to BUY / EQUIP / take off.
+// Built last, without the seeded rnd, so the world layout above is unchanged. No new colliders: the cave climbs as before.
+const COS = [
+  { id: 'party', slot: 'hat', name: 'Party Hat', price: 5 },
+  { id: 'shades', slot: 'face', name: 'Sunglasses', price: 10 },
+  { id: 'lei', slot: 'body', name: 'Flower Lei', price: 15 },
+  { id: 'bananahat', slot: 'hat', name: 'Banana Hat', price: 25 },
+  { id: 'scarf', slot: 'body', name: 'Scarf', price: 30 },
+  { id: 'goggles', slot: 'face', name: 'Goggles', price: 40 },
+  { id: 'propeller', slot: 'hat', name: 'Propeller Cap', price: 60 },
+  { id: 'tophat', slot: 'hat', name: 'Top Hat', price: 90 },
+  { id: 'chain', slot: 'body', name: 'Gold Chain', price: 120 },
+  { id: 'crown', slot: 'hat', name: 'Crown', price: 200 },
+];
+const FURS = [
+  { id: 'fur-charcoal', name: 'Charcoal', color: '#34343a', price: 0 }, { id: 'fur-brown', name: 'Brown', color: '#6b4226', price: 5 },
+  { id: 'fur-red', name: 'Red', color: '#b8322a', price: 10 }, { id: 'fur-blue', name: 'Blue', color: '#2f5fd0', price: 10 },
+  { id: 'fur-green', name: 'Green', color: '#2f9a45', price: 15 }, { id: 'fur-purple', name: 'Purple', color: '#7a3fc0', price: 20 },
+  { id: 'fur-pink', name: 'Pink', color: '#e0609a', price: 20 }, { id: 'fur-gold', name: 'Golden', color: '#d9a520', price: 40 },
+];
+FURS.forEach(f => { f.slot = 'fur'; });
+const COS_BY = Object.fromEntries([...COS, ...FURS].map(i => [i.id, i]));
+function cleanCos(c) { const o = {}; if (c && typeof c === 'object') for (const sl of ['hat', 'face', 'body']) { const it = COS_BY[c[sl]]; if (it && it.slot === sl) o[sl] = it.id; } return o; }
+const COS_MAT = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, side: THREE.DoubleSide }); // shared by every cosmetic on every gorilla + the shop display
+const COS_GEO = (() => {
+  const G = {}, mk = (seed, f) => { const b = new GorillaBuilder(); b.h = seed; f(b); return b.build(); };
+  const cyl = (rt, rb, h, seg = 10, open = false) => new THREE.CylinderGeometry(rt, rb, h, seg, 1, open);
+  const RX = (a) => new Q().setFromAxisAngle(new V3(1, 0, 0), a);
+  const seg = (b, a, c, r, col) => { const d = c.clone().sub(a); b.add(cyl(r, r, d.length(), 5, true), col, M4(a.clone().add(c).multiplyScalar(0.5), qFromTo(UP, d)), 1, 0); };
+  // head-local (gorilla head: top ~0.26 m above the eyes, face front ~ -0.22 m z); body-local (torso centre, neck ~0.3 m up)
+  G.party = mk(11, b => { b.add(new THREE.ConeGeometry(0.09, 0.26, 8), '#ff4fa3', M4(new V3(0, 0.34, 0.01)), 1, 0.06); b.add(cyl(0.062, 0.072, 0.035, 8, true), '#ffe14a', M4(new V3(0, 0.3, 0.01)), 1, 0); b.add(new THREE.IcosahedronGeometry(0.032, 0), '#5fd0ff', M4(new V3(0, 0.475, 0.01)), 1, 0); });
+  G.crown = mk(12, b => {
+    b.add(cyl(0.125, 0.115, 0.085, 8, true), '#ffc928', M4(new V3(0, 0.245, 0.01)), 1, 0.05);
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; b.add(new THREE.ConeGeometry(0.024, 0.065, 4), '#ffd84a', M4(new V3(Math.sin(a) * 0.12, 0.318, 0.01 + Math.cos(a) * 0.12)), 1, 0.05); }
+    b.add(new THREE.DodecahedronGeometry(0.026, 0), '#e8203a', M4(new V3(0, 0.245, -0.118)), 1, 0); for (const sx of [-1, 1]) b.add(new THREE.DodecahedronGeometry(0.02, 0), '#2a7bff', M4(new V3(sx * 0.118, 0.245, 0.01)), 1, 0);
+  });
+  G.bananahat = mk(13, b => { b.add(new THREE.TorusGeometry(0.2, 0.045, 6, 12, Math.PI * 0.85).rotateZ(Math.PI * 0.075), '#ffd93a', M4(new V3(0, 0.105, 0.0)), 1, 0.05); for (const sx of [-1, 1]) b.add(new THREE.DodecahedronGeometry(0.03, 0), '#6b4a1a', M4(new V3(sx * 0.19, 0.152, 0)), 1, 0); });
+  G.tophat = mk(14, b => { b.add(cyl(0.19, 0.19, 0.02, 14), '#18181b', M4(new V3(0, 0.215, 0.01)), 1, 0.03); b.add(cyl(0.12, 0.125, 0.22, 14), '#18181b', M4(new V3(0, 0.33, 0.01)), 1, 0.04); b.add(cyl(0.128, 0.128, 0.04, 14, true), '#c8283a', M4(new V3(0, 0.245, 0.01)), 1, 0); });
+  G.propeller = mk(15, b => {
+    ['#e8303a', '#ffd93a', '#2f6fe0', '#2fae4a'].forEach((c, i) => b.add(new THREE.SphereGeometry(0.165, 4, 3, i * Math.PI / 2, Math.PI / 2, 0, Math.PI / 2), c, M4(new V3(0, 0.13, 0.01), null, new V3(1, 0.9, 1)), 1, 0.03));
+    b.add(new THREE.BoxGeometry(0.17, 0.014, 0.11), '#e8303a', M4(new V3(0, 0.2, -0.19), RX(0.25)), 1, 0); b.add(cyl(0.008, 0.008, 0.07, 5), '#888888', M4(new V3(0, 0.3, 0.01)), 1, 0);
+    b.add(new THREE.BoxGeometry(0.32, 0.012, 0.045), '#ffd93a', M4(new V3(0, 0.337, 0.01), new Q().setFromAxisAngle(UP, 0.4)), 1, 0);
+  });
+  G.shades = mk(16, b => { for (const sx of [-1, 1]) { b.add(new THREE.BoxGeometry(0.09, 0.055, 0.016), '#121214', M4(new V3(sx * 0.068, 0.03, -0.232)), 1, 0); b.add(new THREE.BoxGeometry(0.03, 0.012, 0.004), '#8fb8ff', M4(new V3(sx * 0.068 - 0.02, 0.045, -0.241)), 1, 0); b.add(new THREE.BoxGeometry(0.012, 0.012, 0.2), '#121214', M4(new V3(sx * 0.218, 0.04, -0.13)), 1, 0); } b.add(new THREE.BoxGeometry(0.05, 0.012, 0.012), '#121214', M4(new V3(0, 0.045, -0.232)), 1, 0); });
+  G.goggles = mk(17, b => { for (const sx of [-1, 1]) { b.add(cyl(0.052, 0.052, 0.045, 10), '#7a4a22', M4(new V3(sx * 0.07, 0.035, -0.222), RX(Math.PI / 2)), 1, 0.04); b.add(cyl(0.04, 0.04, 0.05, 10), '#5fd0ff', M4(new V3(sx * 0.07, 0.035, -0.226), RX(Math.PI / 2)), 1, 0); } b.add(new THREE.TorusGeometry(0.229, 0.016, 4, 18).rotateX(Math.PI / 2), '#5a3418', M4(new V3(0, 0.035, 0.02)), 1, 0.04); });
+  G.scarf = mk(18, b => { b.add(new THREE.TorusGeometry(0.26, 0.06, 6, 12).rotateX(Math.PI / 2), '#d8323a', M4(new V3(0, 0.3, -0.01), null, new V3(1, 1, 0.88)), 1, 0.06); b.add(new THREE.BoxGeometry(0.1, 0.26, 0.045), '#d8323a', M4(new V3(0.12, 0.17, -0.285), new Q().setFromEuler(new THREE.Euler(-0.2, 0, 0.12))), 1, 0.04); b.add(new THREE.BoxGeometry(0.104, 0.03, 0.05), '#ffffff', M4(new V3(0.125, 0.12, -0.292), new Q().setFromEuler(new THREE.Euler(-0.2, 0, 0.12))), 1, 0); });
+  G.lei = mk(19, b => { const cols = ['#ff5fa8', '#ffe14a', '#ffffff', '#ff8a2a']; for (let i = 0; i < 14; i++) { const a = i / 14 * Math.PI * 2, c = Math.cos(a); b.add(new THREE.DodecahedronGeometry(0.045, 0), cols[i % 4], M4(new V3(Math.sin(a) * 0.28, 0.31 - 0.14 * Math.max(0, c), -c * 0.26 - 0.03 * Math.max(0, c))), 1, 0.05); } });
+  G.chain = mk(20, b => {
+    const g = '#ffcf30', P = [new V3(-0.2, 0.31, -0.17), new V3(-0.12, 0.21, -0.34), new V3(0, 0.12, -0.385), new V3(0.12, 0.21, -0.34), new V3(0.2, 0.31, -0.17)];
+    for (let i = 0; i < P.length - 1; i++) seg(b, P[i], P[i + 1], 0.016, g);
+    b.add(new THREE.TorusGeometry(0.2, 0.016, 4, 10, Math.PI).rotateX(-Math.PI / 2), g, M4(new V3(0, 0.31, -0.17)), 1, 0);
+    b.add(cyl(0.058, 0.058, 0.018, 10), g, M4(new V3(0, 0.1, -0.39), RX(Math.PI / 2)), 1, 0.03); b.add(new THREE.TorusGeometry(0.025, 0.009, 4, 8, Math.PI * 0.8), '#ffe14a', M4(new V3(0, 0.1, -0.402)), 1, 0);
+  });
+  return G;
+})();
+
+const LSJ = (k, d) => { try { const v = JSON.parse(LS(k) || 'null'); return v == null ? d : v; } catch (e) { return d; } };
+const SHOP = {
+  cave: CAVES[0], wallet: Math.max(0, LSJ('mm_wallet', 0) | 0), owned: new Set(LSJ('mm_owned', []).filter(id => COS_BY[id])),
+  eq: Object.assign({ hat: null, face: null, body: null, fur: 'fur-charcoal' }, LSJ('mm_equipped', {})),
+  sel: null, msg: '', touch: [null, null], btnTouch: [false, false], btnT: 0, spots: [], near: false,
+};
+for (const sl of ['hat', 'face', 'body']) if (SHOP.eq[sl] && !(SHOP.owned.has(SHOP.eq[sl]) && COS_BY[SHOP.eq[sl]].slot === sl)) SHOP.eq[sl] = null;
+if (!COS_BY[SHOP.eq.fur] || !(COS_BY[SHOP.eq.fur].price === 0 || SHOP.owned.has(SHOP.eq.fur))) SHOP.eq.fur = 'fur-charcoal';
+const isOwned = it => it.price === 0 || SHOP.owned.has(it.id);
+const isWorn = it => SHOP.eq[it.slot] === it.id;
+function shopCos() { return cleanCos(SHOP.eq); }
+function shopLook() { // what your own gorilla shows: equipped items, plus a try-on preview of a selected item you don't own yet
+  const look = { color: COS_BY[SHOP.eq.fur].color, cos: shopCos() }, it = SHOP.sel && COS_BY[SHOP.sel];
+  if (it && !isOwned(it)) { if (it.slot === 'fur') look.color = it.color; else look.cos[it.slot] = it.id; }
+  return look;
+}
+function shopSave() { LS('mm_wallet', String(SHOP.wallet)); LS('mm_owned', JSON.stringify([...SHOP.owned])); LS('mm_equipped', JSON.stringify(SHOP.eq)); }
+function shopEarn(n) { SHOP.wallet += n; LS('mm_wallet', String(SHOP.wallet)); shopDirty = true; }
+function shopLookChanged() {
+  ME.color = COS_BY[SHOP.eq.fur].color;
+  if (!NET.infected.has(NET.selfId)) handMat.color.set(shopLook().color);
+  shopDirty = true;
+}
+function shopSelect(id) { if (!COS_BY[id]) return; SHOP.sel = id; SHOP.msg = ''; sfx('tap', 1); shopLookChanged(); }
+function shopPress() {
+  const it = SHOP.sel && COS_BY[SHOP.sel];
+  if (!it) { SHOP.msg = 'Touch an item first'; shopDirty = true; return 'none'; }
+  let r;
+  if (!isOwned(it)) {
+    if (SHOP.wallet < it.price) { SHOP.msg = 'Need ' + (it.price - SHOP.wallet) + ' more bananas'; shopDirty = true; return 'poor'; }
+    SHOP.wallet -= it.price; SHOP.owned.add(it.id); SHOP.eq[it.slot] = it.id; SHOP.msg = 'Bought ' + it.name + '!'; sfx('banana'); r = 'bought';
+  } else if (isWorn(it)) {
+    if (it.slot === 'fur') { SHOP.msg = 'Already wearing ' + it.name; shopDirty = true; return 'worn'; }
+    SHOP.eq[it.slot] = null; SHOP.msg = 'Took off ' + it.name; r = 'unequipped';
+  } else { SHOP.eq[it.slot] = it.id; SHOP.msg = 'Wearing ' + it.name; r = 'equipped'; }
+  sfx('round'); shopSave(); shopLookChanged();
+  if (NET.send) { NET.lastInfo = performance.now(); NET.send.info(myInfo()); } // others see the change right away
+  return r;
+}
+let shopDirty = true;
+function drawBananaIcon(x, cx, cy, r) { x.save(); x.strokeStyle = '#e8b800'; x.lineWidth = r * 0.55; x.lineCap = 'round'; x.beginPath(); x.arc(cx, cy - r * 0.55, r, Math.PI * 0.2, Math.PI * 0.8); x.stroke(); x.strokeStyle = '#ffe14a'; x.lineWidth = r * 0.3; x.stroke(); x.fillStyle = '#5a3a10'; x.fillRect(cx + r * 0.75, cy - r * 0.05, r * 0.22, r * 0.22); x.restore(); }
+
+// ----- shop build: display wall (back), fur colour board (left), mirror + panel + big button (right), lanterns, sign
+const SHOP_G = new THREE.Group(); scene.add(SHOP_G);
+{
+  const k = SHOP.cave, zb = k.c.z - k.h.z, xl = k.c.x - k.h.x, xr = k.c.x + k.h.x, fl = k.floor;
+  SHOP.c = new V3(k.c.x, fl + 1.2, k.c.z);
+  const st = new GorillaBuilder(), glow = new GorillaBuilder(); st.h = 4321; glow.h = 99;
+  const ROT = (x, y, z) => new Q().setFromEuler(new THREE.Euler(x, y, z));
+  // back wall plank board + shelves; items face out of the wall (+z)
+  st.add(new THREE.BoxGeometry(2.9, 1.95, 0.04), '#8a5a32', M4(new V3(k.c.x, fl + 1.12, zb + 0.02)), 1, 0.06);
+  for (const y of [fl + 0.62, fl + 1.42]) st.add(new THREE.BoxGeometry(2.86, 0.05, 0.05), '#6b4423', M4(new V3(k.c.x, y, zb + 0.06)), 1, 0.04);
+  const rows = [['party', 'bananahat', 'propeller', 'tophat', 'crown'], ['shades', 'goggles', 'lei', 'scarf', 'chain']];
+  const tagCells = []; // [itemId, centre, normal-yaw]
+  rows.forEach((row, ri) => row.forEach((id, ci) => {
+    const x = k.c.x - 1.1 + ci * 0.55, it = COS_BY[id], g = COS_GEO[id]; g.computeBoundingBox(); const bb = g.boundingBox, ctr = bb.getCenter(new V3()), sz = bb.getSize(new V3());
+    const body = it.slot === 'body', s = body ? 0.78 : 1, y = ri === 0 ? fl + 1.55 + sz.y * 0.5 * s - 0.1 : fl + 0.92;
+    const anchor = new V3(x, y, zb + 0.2);
+    const m = new THREE.Matrix4().compose(anchor, body ? ROT(-1.15, Math.PI, 0) : ROT(0, Math.PI, 0), new V3(s, s, s)).multiply(new THREE.Matrix4().makeTranslation(-ctr.x, -ctr.y, -ctr.z));
+    const gg = g.clone(); gg.applyMatrix4(m); const p = gg.attributes.position.array, n = gg.attributes.normal.array, c = gg.attributes.color.array;
+    for (let i = 0; i < p.length; i++) { st.p.push(p[i]); st.n.push(n[i]); st.c.push(c[i]); } for (let i = 0; i < p.length / 3; i++) st.f.push(1); gg.dispose();
+    if (ri === 0) st.add(new THREE.BoxGeometry(0.42, 0.03, 0.26), '#6b4423', M4(new V3(x, y - sz.y * 0.5 - 0.015, zb + 0.15)), 1, 0.05); // little shelf
+    else st.add(new THREE.CylinderGeometry(0.015, 0.015, 0.16, 5), '#3a2a1c', M4(new V3(x, y + 0.02, zb + 0.1), ROT(Math.PI / 2, 0, 0)), 1, 0); // peg
+    SHOP.spots.push({ id, p: anchor.clone() });
+    tagCells.push([id, new V3(x, ri === 0 ? fl + 1.3 : fl + 0.5, zb + 0.05), 0]);
+  }));
+  // fur colour board on the left wall (faces +x)
+  st.add(new THREE.BoxGeometry(0.04, 1.25, 2.15), '#8a5a32', M4(new V3(xl + 0.02, fl + 1.02, k.c.z - 0.6)), 1, 0.06);
+  FURS.forEach((f, i) => {
+    const z = k.c.z - 1.35 + (i % 4) * 0.5, y = i < 4 ? fl + 1.38 : fl + 0.83;
+    st.add(new THREE.BoxGeometry(0.05, 0.27, 0.27), '#3a2a1c', M4(new V3(xl + 0.05, y, z)), 1, 0);
+    st.add(new THREE.BoxGeometry(0.04, 0.23, 0.23), f.color, M4(new V3(xl + 0.08, y, z)), 1, 0.03);
+    SHOP.spots.push({ id: f.id, p: new V3(xl + 0.16, y, z) });
+    tagCells.push([f.id, new V3(xl + 0.045, y - 0.215, z), Math.PI / 2]);
+  });
+  // right wall: shop mirror frame, panel board, big button
+  const mz = k.c.z - 0.95, bz = k.c.z + 0.4;
+  st.add(new THREE.BoxGeometry(0.06, 1.12, 0.9), '#6b4423', M4(new V3(xr - 0.03, fl + 1.1, mz)), 1, 0.05);
+  st.add(new THREE.BoxGeometry(0.05, 0.5, 0.82), '#6b4423', M4(new V3(xr - 0.025, fl + 1.7, bz)), 1, 0.05);
+  st.add(new THREE.CylinderGeometry(0.17, 0.19, 0.06, 12), '#3a2a1c', M4(new V3(xr - 0.03, fl + 1.02, bz), ROT(0, 0, Math.PI / 2)), 1, 0);
+  // lanterns (back corners) + torches either side of the entrance outside
+  const lamps = [new V3(xl + 0.28, fl + 2.05, zb + 0.22), new V3(xr - 0.28, fl + 2.05, zb + 0.22)];
+  for (const L of lamps) { st.add(new THREE.BoxGeometry(0.16, 0.03, 0.16), '#2a2018', M4(L.clone().add(new V3(0, 0.13, 0))), 1, 0); st.add(new THREE.BoxGeometry(0.16, 0.03, 0.16), '#2a2018', M4(L.clone().add(new V3(0, -0.13, 0))), 1, 0); glow.add(new THREE.BoxGeometry(0.12, 0.23, 0.12), '#ffb347', M4(L), 1, 0.05); glow.add(new THREE.OctahedronGeometry(0.05, 0), '#fff2a0', M4(L), 1, 0); }
+  for (const sx of [-1, 1]) {
+    const T = new V3(k.c.x + sx * (k.h.x + 0.45), fl + 1.2, -HALF + 0.12);
+    st.add(new THREE.CylinderGeometry(0.035, 0.03, 0.5, 5), '#5a3a1e', M4(T, ROT(0.35, 0, 0)), 1, 0);
+    glow.add(new THREE.OctahedronGeometry(0.09, 0), '#ff8a2a', M4(T.clone().add(new V3(0, 0.3, 0.09)), null, new V3(1, 1.5, 1)), 1, 0); glow.add(new THREE.OctahedronGeometry(0.05, 0), '#ffe680', M4(T.clone().add(new V3(0, 0.33, 0.11)), null, new V3(1, 1.4, 1)), 1, 0);
+  }
+  const stMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, emissive: 0x3a2610, side: THREE.DoubleSide }); // warm lantern-lit look without a real light
+  SHOP_G.add(new THREE.Mesh(st.build(), stMat), new THREE.Mesh(glow.build(), new THREE.MeshBasicMaterial({ vertexColors: true, fog: false })));
+  // price tags: one canvas atlas, one mesh
+  const TC = document.createElement('canvas'); TC.width = 512; TC.height = 512; const ttex = new THREE.CanvasTexture(TC); ttex.colorSpace = THREE.SRGBColorSpace;
+  const TW = 0.27, TH = 0.085, cols = 4, cw = 128, ch = 512 / 5, pos = [], uv = [];
+  tagCells.forEach(([id, c, yaw], i) => {
+    const cx = (i % cols) * cw, cy = Math.floor(i / cols) * ch, u0 = cx / 512, u1 = (cx + cw) / 512, v1 = 1 - cy / 512, v0 = 1 - (cy + ch) / 512;
+    const q = new Q().setFromAxisAngle(UP, yaw), P = (dx, dy) => new V3(dx, dy, 0).applyQuaternion(q).add(c);
+    const a = P(-TW / 2, -TH / 2), b = P(TW / 2, -TH / 2), d = P(TW / 2, TH / 2), e = P(-TW / 2, TH / 2);
+    pos.push(...a.toArray(), ...b.toArray(), ...d.toArray(), ...a.toArray(), ...d.toArray(), ...e.toArray()); uv.push(u0, v0, u1, v0, u1, v1, u0, v0, u1, v1, u0, v1);
+  });
+  const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); tg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  SHOP_G.add(new THREE.Mesh(tg, new THREE.MeshBasicMaterial({ map: ttex, fog: false })));
+  SHOP.drawTags = () => {
+    const x = TC.getContext('2d');
+    tagCells.forEach(([id], i) => {
+      const it = COS_BY[id], cx = (i % cols) * cw, cy = Math.floor(i / cols) * ch, sel = SHOP.sel === id;
+      x.fillStyle = sel ? '#ffe680' : '#f3e2b8'; x.fillRect(cx + 2, cy + 2, cw - 4, ch - 4); x.strokeStyle = '#5a3a1e'; x.lineWidth = 4; x.strokeRect(cx + 4, cy + 4, cw - 8, ch - 8);
+      x.fillStyle = '#3a2410'; x.textAlign = 'center'; x.font = 'bold 19px system-ui,sans-serif'; x.fillText(it.name, cx + cw / 2, cy + 36);
+      const worn = isWorn(it), own = isOwned(it);
+      x.font = 'bold 30px system-ui,sans-serif'; x.fillStyle = worn ? '#1f8f3a' : own ? '#2a5aa8' : '#7a4a00';
+      if (worn || own) x.fillText(worn ? 'WORN' : it.price ? 'OWNED' : 'FREE', cx + cw / 2, cy + 78);
+      else { const t = String(it.price), w = x.measureText(t).width; x.fillText(t, cx + cw / 2 - 14, cy + 78); drawBananaIcon(x, cx + cw / 2 - 14 + w / 2 + 18, cy + 70, 13); }
+    });
+    ttex.needsUpdate = true;
+  };
+  // panel above the big button
+  const PC = document.createElement('canvas'); PC.width = 512; PC.height = 300; const ptex = new THREE.CanvasTexture(PC); ptex.colorSpace = THREE.SRGBColorSpace;
+  const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.76, 0.445), new THREE.MeshBasicMaterial({ map: ptex, fog: false }));
+  panel.position.set(xr - 0.055, fl + 1.7, bz); panel.rotation.y = -Math.PI / 2; SHOP_G.add(panel);
+  const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.15, 0.1, 14), new THREE.MeshBasicMaterial({ color: 0x33cc55, fog: false }));
+  btn.position.set(xr - 0.1, fl + 1.02, bz); btn.rotation.z = Math.PI / 2; SHOP_G.add(btn);
+  SHOP.btnP = new V3(xr - 0.18, fl + 1.02, bz); SHOP.btn = btn;
+  SHOP.drawPanel = () => {
+    const x = PC.getContext('2d'), it = SHOP.sel && COS_BY[SHOP.sel];
+    x.fillStyle = '#2a1a0c'; x.fillRect(0, 0, 512, 300); x.strokeStyle = '#ffcf30'; x.lineWidth = 8; x.strokeRect(6, 6, 500, 288);
+    x.textAlign = 'center'; x.fillStyle = '#ffcf30'; x.font = 'bold 44px system-ui,sans-serif'; x.fillText('MONKEY MART', 256, 58);
+    x.fillStyle = '#ffe680'; x.font = 'bold 34px system-ui,sans-serif'; x.fillText('Wallet: ' + SHOP.wallet + ' bananas', 256, 110);
+    let act = 'Touch an item to try it on', col = '#cccccc';
+    if (it) {
+      x.fillStyle = '#ffffff'; x.font = 'bold 36px system-ui,sans-serif'; x.fillText(it.name + (isOwned(it) ? '' : '  -  ' + it.price + ' bananas'), 256, 165);
+      if (!isOwned(it)) { const ok = SHOP.wallet >= it.price; act = ok ? 'Press button to BUY' : 'Need ' + (it.price - SHOP.wallet) + ' more bananas'; col = ok ? '#66ff88' : '#ff7777'; }
+      else if (isWorn(it)) { act = it.slot === 'fur' ? 'EQUIPPED' : 'EQUIPPED - press to take off'; col = '#66ff88'; }
+      else { act = 'Press button to EQUIP'; col = '#66ccff'; }
+    }
+    x.fillStyle = col; x.font = 'bold 30px system-ui,sans-serif'; x.fillText(act, 256, 220);
+    if (SHOP.msg) { x.fillStyle = '#ffcf30'; x.font = '26px system-ui,sans-serif'; x.fillText(SHOP.msg, 256, 268); }
+    ptex.needsUpdate = true;
+    const can = it && (isOwned(it) ? !(isWorn(it) && it.slot === 'fur') : SHOP.wallet >= it.price);
+    btn.material.color.set(can ? 0x33cc55 : it ? 0x995544 : 0x777777);
+  };
+  // small shop mirror on the right wall (renders only when you are in the cave, facing it)
+  const sm = new Reflector(new THREE.PlaneGeometry(0.8, 1.02), { textureWidth: 256, textureHeight: 320, color: 0xc8d0d8, multisample: 0, clipBias: 0.003 });
+  sm.position.set(xr - 0.065, fl + 1.1, mz); sm.rotation.y = -Math.PI / 2; sm.camera.layers.enable(MIRROR_LAYER); sm.visible = false; SHOP_G.add(sm);
+  SHOP.mirror = sm; SHOP.mirrorN = new V3(-1, 0, 0);
+  // "MONKEY MART" sign above the cave entrance (outside, always visible)
+  const SC = document.createElement('canvas'); SC.width = 512; SC.height = 128; const sx2 = SC.getContext('2d');
+  sx2.fillStyle = '#6b4423'; sx2.fillRect(0, 0, 512, 128); sx2.strokeStyle = '#ffcf30'; sx2.lineWidth = 10; sx2.strokeRect(5, 5, 502, 118);
+  sx2.fillStyle = '#ffe14a'; sx2.font = 'bold 66px system-ui,sans-serif'; sx2.textAlign = 'center'; sx2.textBaseline = 'middle'; sx2.fillText('MONKEY MART', 256, 68); drawBananaIcon(sx2, 40, 70, 20); drawBananaIcon(sx2, 472, 70, 20);
+  const stex = new THREE.CanvasTexture(SC); stex.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.9, 0.475), new THREE.MeshBasicMaterial({ map: stex }));
+  sign.position.set(k.c.x, fl + k.h.y * 2 + 0.45, -HALF + 0.2); scene.add(sign); SHOP.sign = sign;
+}
+function updateShopMirror(camPos) {
+  const toCam = _sp.copy(camPos).sub(SHOP.mirror.position);
+  const near = SHOP_G.visible && toCam.length() < 5 && toCam.dot(SHOP.mirrorN) > 0.05;
+  SHOP.mirror.visible = near; return near;
+}
+const _sp = new V3();
+function shopTick(now, headW) {
+  const d = headW.distanceTo(SHOP.c);
+  SHOP_G.visible = d < 18; // details only render when you're near the cave
+  SHOP.near = d < 4.5;
+  if (!SHOP.near) { if (SHOP.sel && d > 8) { SHOP.sel = null; SHOP.msg = ''; shopLookChanged(); } SHOP.touch[0] = SHOP.touch[1] = null; SHOP.btnTouch[0] = SHOP.btnTouch[1] = false; }
+  else for (let i = 0; i < 2; i++) {
+    const h = handsW[i]; let hit = null;
+    for (const s of SHOP.spots) if (h.distanceTo(s.p) < 0.15) { hit = s.id; break; }
+    if (hit && hit !== SHOP.touch[i]) shopSelect(hit);
+    SHOP.touch[i] = hit;
+    const onBtn = h.distanceTo(SHOP.btnP) < 0.17;
+    if (onBtn && !SHOP.btnTouch[i] && now - SHOP.btnT > 450) { SHOP.btnT = now; shopPress(); }
+    SHOP.btnTouch[i] = onBtn;
+  }
+  if (shopDirty && SHOP_G.visible) { shopDirty = false; SHOP.drawTags(); SHOP.drawPanel(); }
+}
+shopLookChanged(); SHOP.drawTags(); SHOP.drawPanel();
+MM.SHOP = SHOP; MM.COS = COS; MM.FURS = FURS; MM.shopPress = shopPress; MM.shopSelect = shopSelect; MM.shopLook = shopLook; MM.shopCos = shopCos;
+MM.handMat = handMat; MM.LAVA = LAVA; MM.SHOP_G = SHOP_G; MM.shopTick = shopTick;
+MM.shopSetWallet = n => { SHOP.wallet = n; shopSave(); shopDirty = true; };

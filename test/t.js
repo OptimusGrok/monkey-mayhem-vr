@@ -149,13 +149,14 @@ const LOCAL_TRANSPORT = () => {
   ok(vine.zr > 1 && vine.vr > 1, `vine swings physically with the player (player swing ${vine.zr.toFixed(2)} m, vine end ${vine.vr.toFixed(2)} m)`);
   ok(vine.released && vine.afterV > 0.3, `letting go keeps swing momentum (${vine.afterV.toFixed(2)} m/s)`);
   const ban = await A.p.evaluate(() => {
-    MM.PH.freeze = true; const b = MM.BANANAS[0]; MM.place(b.p.x, MM.terrainH(b.p.x, b.p.z) + 0.95, b.p.z + 0.6); T.idle(); MM.step(1 / 72); const n0 = MM.ME.bananas;
+    const w0 = MM.SHOP.wallet; MM.PH.freeze = true; const b = MM.BANANAS[0]; MM.place(b.p.x, MM.terrainH(b.p.x, b.p.z) + 0.95, b.p.z + 0.6); T.idle(); MM.step(1 / 72); const n0 = MM.ME.bananas;
     T.handTo(1, b.p.toArray()); MM.step(1 / 72); const n1 = MM.ME.bananas; const gone = !b.alive; MM.step(1 / 72); const n2 = MM.ME.bananas;
     const b2 = MM.BANANAS[5]; T.idle(); MM.place(b2.p.x, b2.p.y, b2.p.z); MM.step(1 / 72); const n3 = MM.ME.bananas; MM.PH.freeze = false;
-    return { n0, n1, n2, n3, gone, hud: document.getElementById('hud').textContent };
+    return { n0, n1, n2, n3, gone, w0, w3: MM.SHOP.wallet, lsw: +localStorage.getItem('mm_wallet'), hud: document.getElementById('hud').textContent };
   });
   ok(ban.n1 === ban.n0 + 1 && ban.gone && ban.n2 === ban.n1, `banana collects on hand touch (counter ${ban.n0}→${ban.n1}), only once`);
   ok(ban.n3 === ban.n2 + 1, 'banana collects by head touch too');
+  ok(ban.w3 === ban.w0 + 2 && ban.lsw === ban.w3, `collected bananas also go into the persistent shop wallet (${ban.w0}→${ban.w3}, saved in localStorage)`);
   const course = await A.p.evaluate(() => {
     localStorage.removeItem('mm_course_best'); MM.COURSE_S.best = null;
     const C = MM.COURSE, s = C.start, f = C.finish; const r = {};
@@ -217,7 +218,7 @@ const LOCAL_TRANSPORT = () => {
     MM.fake = { head: [0, 1.6, 0], headQ: look(0.02), hands: [{ p: [-0.35, 1.0, 0.3] }, { p: [-0.35, 1.0, -0.3] }] };
     MM.place(S, MM.terrainH(S, M.c.z) + 0.95, M.c.z); MM.step(1 / 72, 30);
     const av = M.avatar, magenta = () => { const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight, px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); let n = 0, sx = 0, sy = 0; for (let i = 0; i < px.length; i += 4) if (px[i] > 170 && px[i + 1] < 90 && px[i + 2] > 170) { n++; sx += (i / 4) % w; sy += Math.floor(i / 4 / w); } return { n, cx: n ? sx / n : -1, cy: n ? sy / n : -1 }; };
-    const oldColor = MM.ME.color; MM.ME.color = '#ff00ff';
+    MM.mirrorTestColor = '#ff00ff';
     R.info.autoReset = false; const meas = () => { const ts = []; let calls = 0, tris = 0; for (let i = 0; i < 20; i++) { R.info.reset(); const t0 = performance.now(); MM.render(); gl.finish(); ts.push(performance.now() - t0); calls = R.info.render.calls; tris = R.info.render.triangles; } ts.sort((a, b) => a - b); return { ms: ts[10], calls, tris }; };
     MM.render(); r.near = { visible: M.mesh.visible, avatar: av.group.visible, px: magenta(), perf: meas() };
     r.layers = { mainSeesAvatar: MM.camera.layers.test(av.body.layers), mirrorSeesAvatar: M.mesh.camera.layers.test(av.body.layers) };
@@ -231,7 +232,7 @@ const LOCAL_TRANSPORT = () => {
     // glass isn't climbable; frame logs are
     const glass = MM.colliders.find(c => c.kind === 'mirror'), frame = MM.colliders.filter(c => c.kind === 'mirrorframe');
     r.glassClimb = glass.climb; r.frameClimb = frame.length && frame.every(c => c.climb);
-    R.info.autoReset = true; MM.ME.color = oldColor; MM.step(1 / 72);
+    R.info.autoReset = true; MM.mirrorTestColor = null; MM.step(1 / 72);
     return r;
   });
   ok(mir.distSpawn > 3 && mir.distSpawn < 8, `mirror stands ${mir.distSpawn.toFixed(1)} m from spawn, facing the centre`);
@@ -309,6 +310,43 @@ const LOCAL_TRANSPORT = () => {
   // first-person view of your own hands (3 fingers + thumb, furry forearms)
   await A.p.evaluate(() => { const T3 = MM.THREE, q = (x, y, z) => new T3.Quaternion().setFromEuler(new T3.Euler(x, y, z, 'YXZ')).toArray(); MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: q(-0.32, 0, 0), hands: [{ p: [-0.21, 1.36, -0.46], q: new T3.Quaternion().setFromEuler(new T3.Euler(-0.35, 0.35, 0, 'YXZ')).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 0, 1), Math.PI / 2)).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 1, 0), -Math.PI / 2)).toArray() }, { p: [0.21, 1.36, -0.46], q: new T3.Quaternion().setFromEuler(new T3.Euler(-0.35, -0.35, 0, 'YXZ')).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 0, 1), -Math.PI / 2)).multiply(new T3.Quaternion().setFromAxisAngle(new T3.Vector3(0, 1, 0), Math.PI / 2)).toArray() }] }; MM.place(1.5, 0.95, 3); MM.step(1 / 72); MM.render(); });
   await A.p.screenshot({ path: SHOTS + 'hands_fp.png' });
+  // ===== cosmetics shop (MONKEY MART in the waterfall cave) =====
+  const shop = await A.p.evaluate(() => {
+    const r = {}; MM.PH.freeze = true; MM.timeOverride = 0.25;
+    MM.shopSetWallet(3); MM.shopSelect('crown'); r.preview = MM.shopLook().cos.hat; r.poor = MM.shopPress(); r.poorW = MM.SHOP.wallet; r.poorOwned = MM.SHOP.owned.has('crown'); r.poorMsg = MM.SHOP.msg;
+    MM.shopSetWallet(300);
+    MM.shopSelect('party'); r.buy1 = MM.shopPress(); r.w1 = MM.SHOP.wallet; r.hat1 = MM.SHOP.eq.hat;
+    MM.shopSelect('crown'); r.buy2 = MM.shopPress(); r.w2 = MM.SHOP.wallet; r.hat2 = MM.SHOP.eq.hat; // one item per slot: crown replaces party hat
+    MM.shopSelect('crown'); r.off = MM.shopPress(); r.hat3 = MM.SHOP.eq.hat;
+    MM.shopSelect('party'); r.on = MM.shopPress(); r.hat4 = MM.SHOP.eq.hat; r.w4 = MM.SHOP.wallet; // re-equip owned item: free
+    MM.shopSelect('fur-blue'); r.fur = MM.shopPress(); r.color = MM.ME.color; r.hand = MM.handMat.color.getHexString(); r.w5 = MM.SHOP.wallet;
+    // real touch interaction: walk into the cave, touch an item, then the big button
+    const k = MM.SHOP.c; MM.place(k.x, k.y - 0.25, k.z + 0.8); T.idle(); MM.step(1 / 72);
+    const spot = MM.SHOP.spots.find(s => s.id === 'shades'); T.handTo(0, spot.p.toArray()); MM.step(1 / 72); r.touchSel = MM.SHOP.sel; r.touchPreview = MM.shopLook().cos.face;
+    T.idle(); MM.step(1 / 72); T.handTo(1, MM.SHOP.btnP.toArray()); MM.step(1 / 72); r.touchBuy = MM.SHOP.eq.face; r.w6 = MM.SHOP.wallet; T.idle(); MM.step(1 / 72);
+    MM.render(); r.near = MM.SHOP.near; r.mirrorCos = MM.MIRROR.avatar.cosKey;
+    r.ls = { w: localStorage.getItem('mm_wallet'), o: JSON.parse(localStorage.getItem('mm_owned')), e: JSON.parse(localStorage.getItem('mm_equipped')) };
+    MM.place(0, 0.95, 2); MM.step(1 / 72); r.farHidden = !MM.SHOP_G.visible; MM.PH.freeze = false; return r;
+  });
+  ok(shop.preview === 'crown' && shop.poor === 'poor' && shop.poorW === 3 && !shop.poorOwned && /Need 197 more/.test(shop.poorMsg), `can't buy without enough bananas: crown previews on you but stays unbought ("${shop.poorMsg}")`);
+  ok(shop.buy1 === 'bought' && shop.w1 === 295 && shop.hat1 === 'party', 'BUY spends bananas and equips the item (party hat, 300→295)');
+  ok(shop.buy2 === 'bought' && shop.w2 === 95 && shop.hat2 === 'crown', 'one item per slot: buying the crown replaces the party hat');
+  ok(shop.off === 'unequipped' && shop.hat3 == null && shop.on === 'equipped' && shop.hat4 === 'party' && shop.w4 === 95, 'owned items toggle EQUIP / take off for free');
+  ok(shop.fur === 'bought' && shop.color === '#2f5fd0' && shop.hand === '2f5fd0' && shop.w5 === 85, 'fur colour from the colour board recolours your gorilla and hands');
+  ok(shop.touchSel === 'shades' && shop.touchPreview === 'shades' && shop.touchBuy === 'shades' && shop.w6 === 75, 'Gorilla Tag style in the cave: touching an item previews it, touching the big button buys it');
+  ok(shop.mirrorCos.includes('party') && shop.mirrorCos.includes('shades'), 'mirror reflection wears the equipped cosmetics');
+  ok(shop.ls.w === '75' && shop.ls.o.includes('crown') && shop.ls.e.hat === 'party' && shop.ls.e.fur === 'fur-blue' && shop.farHidden, 'wallet, owned and equipped saved to localStorage; shop details hidden when far away');
+  const P3 = await A.ctx.newPage(); await P3.goto(URL); await P3.waitForFunction(() => !!window.MM);
+  const pers = await P3.evaluate(() => ({ w: MM.SHOP.wallet, o: [...MM.SHOP.owned].sort(), e: MM.SHOP.eq, c: MM.ME.color })); await P3.close();
+  ok(pers.w === 75 && pers.o.join() === 'crown,fur-blue,party,shades' && pers.e.hat === 'party' && pers.e.face === 'shades' && pers.e.fur === 'fur-blue' && pers.c === '#2f5fd0', 'shop state persists across a reload: ' + JSON.stringify(pers));
+  // shop shots
+  const shopShot = async (name, pos, yaw, pitch, hands) => { await A.p.evaluate(([pos, yaw, pitch, hands]) => { const T3 = MM.THREE; MM.timeOverride = 0.25; MM.PH.freeze = true; MM.fake = { head: [0, 1.6, 0], headQ: new T3.Quaternion().setFromEuler(new T3.Euler(pitch, yaw, 0, 'YXZ')).toArray(), hands: hands || [{ p: [-0.25, 0.95, 0.2] }, { p: [0.25, 0.95, 0.2] }] }; const k = MM.SHOP.c; MM.place(k.x + pos[0], k.y - 0.25 + pos[1], k.z + pos[2]); MM.step(1 / 72); MM.render(); }, [pos, yaw, pitch, hands]); await A.p.screenshot({ path: SHOTS + name }); };
+  await A.p.evaluate(() => { MM.shopSetWallet(400); for (const id of ['tophat', 'scarf']) { MM.shopSelect(id); MM.shopPress(); } MM.shopSelect('fur-red'); });
+  await shopShot('cave_shop.png', [0, 0, 1.6], 0, 0.05);
+  const mo = await A.p.evaluate(() => { const m = MM.SHOP.mirror.position, k = MM.SHOP.c; return [m.x - 1.15 - k.x, 0, m.z - k.z]; });
+  await shopShot('shop_mirror.png', mo, -Math.PI / 2, 0.0, [{ p: [0.15, 0.95, -0.45] }, { p: [0.35, 1.75, 0.3] }]);
+  await shopShot('cave_shop_entrance.png', [0, 0.2, 7], 0, 0.15);
+  await A.p.evaluate(() => { MM.shopSelect('fur-charcoal'); MM.shopPress(); MM.place(0, 0.95, 2); MM.step(1 / 72); });
   await shot('night_sky.png', [3, 0.95, 4], 0.6, 1.1, 0.75);
   await shot('dusk_sky.png', [3, 0.95, 4], -2.3, 1.0, 0.5);
   await shot('night_fireflies.png', [2, 1.3, 6], -0.6, 0.05, 0.78);
@@ -351,6 +389,16 @@ const LOCAL_TRANSPORT = () => {
     await P1.p.waitForTimeout(300);
     const st2 = await Promise.all([P1, P2].map(P => P.p.evaluate(() => ({ round: MM.NET.round, n: MM.NET.infected.size }))));
     ok(reset && st2[1].round === st2[0].round && st2[1].n === 1, `round ends when everyone is infected, then resets (round ${round0}→${st2[0].round}, ${st2[0].n} infected)`);
+    // cosmetics + fur colour sync, and lava overriding them while tagged
+    await P1.p.evaluate(() => { MM.shopSetWallet(500); for (const id of ['fur-red', 'tophat', 'chain', 'goggles']) { MM.shopSelect(id); MM.shopPress(); } });
+    await P2.p.evaluate(() => { MM.shopSetWallet(500); for (const id of ['fur-gold', 'propeller', 'lei', 'shades']) { MM.shopSelect(id); MM.shopPress(); } });
+    const cs = await P2.p.waitForFunction(() => { const r = MM.remoteList()[0]; return r && r.cos.includes('tophat') && r.color === '#b8322a' ? r : null; }, null, { timeout: 5000 }).then(h => h.jsonValue()).catch(() => null);
+    const cs1 = await P1.p.waitForFunction(() => { const r = MM.remoteList()[0]; return r && r.cos.includes('propeller') && r.color === '#d9a520' ? r : null; }, null, { timeout: 5000 }).then(h => h.jsonValue()).catch(() => null);
+    ok(cs && cs1 && cs.cos.includes('chain') && cs.cos.includes('goggles') && (cs.it || cs.matColor === 'b8322a') && cs1.cos.includes('lei'), 'equipped cosmetics and fur colour sync to the other player: ' + (cs && cs.cos) + ' / ' + (cs1 && cs1.cos));
+    await P1.p.waitForTimeout(300);
+    const lv = await Promise.all([P1, P2].map(P => P.p.evaluate(() => { const r = MM.remoteList()[0]; return { remIt: r.it, m: r.matColor, cos: r.cos, lava: MM.LAVA.getHexString(), meIt: MM.NET.infected.has(MM.NET.selfId), hand: MM.handMat.color.getHexString() }; })));
+    const sees = lv.find(x => x.remIt), itMe = lv.find(x => x.meIt);
+    ok(sees && itMe && sees.m === sees.lava && sees.cos.length > 2 && itMe.hand === itMe.lava, `'it'/lava look overrides the bought fur colour while tagged (remote ${sees && sees.m}, own hands ${itMe && itMe.hand}; cosmetics kept ${sees && sees.cos})`);
     // voice chat
     await P1.p.waitForFunction(() => MM.remoteList()[0] && MM.remoteList()[0].voice, null, { timeout: 15000 }).catch(() => { });
     await P1.p.waitForTimeout(300);
@@ -368,6 +416,12 @@ const LOCAL_TRANSPORT = () => {
     await runner.p.evaluate(() => { document.getElementById('hud').style.display = 'none'; document.getElementById('hint').style.display = 'none'; MM.timeOverride = 0.25; });
     await tagger.p.evaluate(() => { MM.NET.infected.add(MM.NET.selfId); });
     await runner.p.waitForTimeout(600); await runner.p.screenshot({ path: SHOTS + 'multiplayer_nametag.png' });
+    // two players in different cosmetics, side by side, nobody lava
+    await P1.p.evaluate(() => { MM.NET.infected.clear(); }); await P2.p.evaluate(() => { MM.NET.infected.clear(); });
+    await P2.p.evaluate(() => { MM.PH.freeze = true; MM.fake.headQ = new MM.THREE.Quaternion().setFromEuler(new MM.THREE.Euler(0, Math.PI / 2, 0, 'YXZ')).toArray(); MM.place(0.6, MM.terrainH(0.6, 0) + 0.95, 0); });
+    await P1.p.evaluate(() => { MM.PH.freeze = true; MM.fake.headQ = new MM.THREE.Quaternion().setFromEuler(new MM.THREE.Euler(0, -Math.PI / 2, 0, 'YXZ')).toArray(); MM.place(-1.6, MM.terrainH(-1.6, 0) + 0.95, 0); MM.timeOverride = 0.25; });
+    await P1.p.evaluate(() => { document.getElementById('hud').style.display = 'none'; document.getElementById('hint').style.display = 'none'; });
+    await P1.p.waitForTimeout(700); await P1.p.screenshot({ path: SHOTS + 'shop_two_players.png' }); await P2.p.evaluate(() => { document.getElementById('hud').style.display = 'none'; document.getElementById('hint').style.display = 'none'; MM.timeOverride = 0.25; }); await P2.p.waitForTimeout(300); await P2.p.screenshot({ path: SHOTS + 'shop_two_players_b.png' });
   }
   // ===== real public signalling check (Trystero + Nostr relays) =====
   {
