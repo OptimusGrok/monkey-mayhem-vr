@@ -565,9 +565,9 @@ myHands.forEach(h => scene.add(h));
 const FP_LAYER = 6; camera.layers.enable(FP_LAYER);
 const myArms = [0, 1].map(() => { const u = new THREE.Mesh(gorillaGeo.upper, handMat), f = new THREE.Mesh(gorillaGeo.fore, handMat); u.layers.set(FP_LAYER); f.layers.set(FP_LAYER); scene.add(u, f); return { u, f }; });
 const _fpE = new THREE.Euler(), _fpY = new THREE.Euler(), _fpQ = new Q();
-const wristCv = document.createElement('canvas'); wristCv.width = 256; wristCv.height = 128;
+const wristCv = document.createElement('canvas'); wristCv.width = 256; wristCv.height = 160;
 const wristTex = new THREE.CanvasTexture(wristCv); wristTex.colorSpace = THREE.SRGBColorSpace;
-const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: wristTex, fog: false }));
+const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.0875), new THREE.MeshBasicMaterial({ map: wristTex, fog: false }));
 wrist.position.set(0, 0.05, 0.1); wrist.rotation.x = -Math.PI / 2 + 0.35; myHands[0].add(wrist);
 const muteBtn = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.012, 10), new THREE.MeshBasicMaterial({ color: 0x33dd55, fog: false }));
 muteBtn.position.set(0.055, 0.045, 0.06); myHands[0].add(muteBtn);
@@ -980,14 +980,25 @@ function drawSign(now) {
 }
 function drawWrist(now) {
   const x = wristCv.getContext('2d'), it = NET.infected.has(NET.selfId);
-  x.fillStyle = it ? '#7a1a00' : '#14301c'; x.fillRect(0, 0, 256, 128);
+  x.fillStyle = it ? '#7a1a00' : '#14301c'; x.fillRect(0, 0, 256, 160);
   x.fillStyle = '#ffe135'; x.font = 'bold 34px system-ui,sans-serif'; x.textAlign = 'left'; x.fillText('Bananas ' + ME.bananas, 10, 42);
   x.fillStyle = '#fff'; x.font = 'bold 26px system-ui,sans-serif';
   x.fillText(COURSE_S.state === 'running' ? 'Time ' + fmt((now - COURSE_S.t0) / 1000) : 'Best ' + fmt(COURSE_S.best), 10, 80);
   x.font = '22px system-ui,sans-serif'; x.fillText((NET.mode === 'tag' ? (it ? "YOU'RE IT!" : 'Run!') : 'Solo') + ' - ' + (1 + NET.remotes.size) + 'P', 10, 114);
   x.textAlign = 'right'; x.fillStyle = VOICE.muted || !VOICE.stream ? '#ff6677' : '#66ff88'; x.fillText(VOICE.stream ? (VOICE.muted ? 'MUTED' : 'MIC ON') : 'NO MIC', 248, 114);
+  x.textAlign = 'left'; x.fillStyle = BATT.level != null && BATT.level < 0.2 && !BATT.charging ? '#ff6677' : '#cfe8ff'; x.fillText(BATT.text, 10, 148);
   wristTex.needsUpdate = true;
 }
+// headset battery (Battery Status API): updated on level/charging events plus a slow poll; 'Battery --' when unavailable
+const BATT = { api: false, level: null, charging: false, text: 'Battery --' };
+(async () => {
+  try {
+    if (typeof navigator.getBattery !== 'function') return;
+    const b = await navigator.getBattery(); BATT.api = true;
+    const up = () => { BATT.level = Number.isFinite(b.level) ? b.level : null; BATT.charging = !!b.charging; BATT.text = BATT.level == null ? 'Battery --' : 'Battery ' + Math.round(BATT.level * 100) + '%' + (BATT.charging ? ' (charging)' : ''); wristDirty = true; };
+    up(); b.addEventListener('levelchange', up); b.addEventListener('chargingchange', up); setInterval(up, 60000);
+  } catch (e) { BATT.text = 'Battery --'; }
+})();
 function drawHud(now) {
   const it = NET.infected.has(NET.selfId);
   $('hud').innerHTML = `<b>${ME.name}</b> - Bananas: ${ME.bananas}<br>Room <b>${NET.code}</b> - ${NET.status} - players ${1 + NET.remotes.size}<br>` +
@@ -1078,7 +1089,7 @@ MM.place = (x, y, z) => { const inp = MM.fake ? readFake() : emptyInput(); rig.p
 MM.headW = () => (lastInp ? lastInp.head.clone() : new V3(0, 1.6, 0)).add(rig.position);
 MM.handsW = () => handsW.map(h => h.toArray());
 MM.muteBtnW = () => { myHands[0].updateMatrixWorld(true); return muteBtn.getWorldPosition(new V3()).toArray(); };
-MM.myHands = myHands; MM.wristShown = () => wrist.visible && muteBtn.visible; MM.skyColor = () => scene.background.getHexString(); MM.starsOp = () => (stars.visible ? starMat.opacity : 0); MM.stars = stars; MM.myArms = myArms; MM.HAND_DROP = HAND_DROP; MM.ARM = { L1: ARM_L1, L2: ARM_L2, SHOULDER, WRIST_LOCAL };
+MM.myHands = myHands; MM.BATT = BATT; MM.drawWrist = () => drawWrist(performance.now()); MM.wristShown = () => wrist.visible && muteBtn.visible; MM.skyColor = () => scene.background.getHexString(); MM.starsOp = () => (stars.visible ? starMat.opacity : 0); MM.stars = stars; MM.myArms = myArms; MM.HAND_DROP = HAND_DROP; MM.ARM = { L1: ARM_L1, L2: ARM_L2, SHOULDER, WRIST_LOCAL };
 MM.setMute = setMute; MM.joinNet = joinNet; MM.startAudio = startAudio; MM.AU = AU; MM.startVoice = startVoice;
 MM.renderInfo = () => ({ calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries });
 MM.remoteList = () => [...NET.remotes.values()].map(r => ({ id: r.id, name: r.name, tag: r.avatar.tag.userData.text, color: r.color, visible: r.avatar.group.visible, head: r.headPos.toArray(), it: NET.infected.has(r.id), voice: !!r.voice, pannerPos: r.voice ? [r.voice.pn.positionX.value, r.voice.pn.positionY.value, r.voice.pn.positionZ.value] : null }));

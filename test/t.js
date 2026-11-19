@@ -64,6 +64,8 @@ const LOCAL_TRANSPORT = () => {
   await A.p.waitForTimeout(800);
   ok(A.errs.length === 0, 'loads with no console errors on landing ' + JSON.stringify(A.errs));
   ok(await A.p.evaluate(() => document.querySelector('h1').textContent.includes('MONKEY MAYHEM') && !!document.getElementById('enterVR') && document.getElementById('roomCode').textContent === 'PUBLIC' && /^Tester$/.test(document.getElementById('nameIn').value)), 'landing: title, Enter VR button, room code, name field');
+  const pwa = await A.p.evaluate(async () => { const m = await (await fetch(document.querySelector('link[rel=manifest]').href)).json(); const sizes = []; for (const i of m.icons) { const img = new Image(); img.src = new URL(i.src, document.baseURI).href; await img.decode(); sizes.push(img.naturalWidth + 'x' + img.naturalHeight + ':' + i.purpose); } const at = new Image(); at.src = document.querySelector('link[rel=apple-touch-icon]').href; await at.decode(); return { name: m.name, short: m.short_name, start: m.start_url, display: m.display, sizes, apple: at.naturalWidth, theme: !!document.querySelector('meta[name=theme-color]'), fav: (await fetch('favicon.ico')).ok }; });
+  ok(pwa.name === 'Monkey Mayhem VR' && pwa.short === 'Monkey Mayhem' && pwa.start === './' && /standalone|fullscreen/.test(pwa.display) && pwa.sizes.join() === '192x192:any,512x512:any,512x512:maskable' && pwa.apple === 180 && pwa.theme && pwa.fav, `home-screen app icons + manifest load (${pwa.sizes.join(', ')}, apple-touch ${pwa.apple}px, favicon)`);
   ok(await A.p.evaluate(() => /^Monkey\d{3}$/.test(localStorage.getItem('mm_name') || 'Monkey123')), 'random default name format MonkeyNNN');
   await A.p.screenshot({ path: SHOTS + 'landing.png' });
   // offline/solo: block the signalling module so no network join happens for the single-player part
@@ -101,6 +103,19 @@ const LOCAL_TRANSPORT = () => {
   });
   ok(!wr.def && wr.hiddenNoMute, 'wrist info panel and mic dot are hidden by default (and the hidden dot can\'t be bumped)');
   ok(wr.c1[0] && wr.c1[1] && !wr.c2[0] && !wr.c2[1] && !wr.right, 'left thumbstick click toggles the wrist panel + mic dot (edge-triggered: holding doesn\'t flicker; right stick does nothing)');
+  { // headset battery on the wrist panel (mocked Battery Status API; and a browser without it)
+    const MOCK = () => { const b = new EventTarget(); b.level = 0.87; b.charging = false; window.__batt = b; navigator.getBattery = () => Promise.resolve(b); };
+    const NOAPI = () => { Object.defineProperty(Navigator.prototype, 'getBattery', { value: undefined, configurable: true }); };
+    const res = [];
+    for (const init of [MOCK, NOAPI]) {
+      const c = await b.newContext({ viewport: { width: 320, height: 200 } }); const p = await c.newPage(); const errs = []; p.on('pageerror', e => errs.push(e.message));
+      await p.addInitScript(init); await p.goto(URL); await p.waitForFunction(() => !!window.MM); await p.waitForTimeout(200);
+      res.push(await p.evaluate(async () => { const r = { t0: MM.BATT.text, api: MM.BATT.api }; if (window.__batt) { __batt.level = 0.42; __batt.dispatchEvent(new Event('levelchange')); r.t1 = MM.BATT.text; __batt.charging = true; __batt.dispatchEvent(new Event('chargingchange')); r.t2 = MM.BATT.text; } MM.drawWrist(); return r; }));
+      res[res.length - 1].errs = errs; await c.close();
+    }
+    ok(res[0].api && res[0].t0 === 'Battery 87%' && res[0].t1 === 'Battery 42%' && res[0].t2 === 'Battery 42% (charging)' && !res[0].errs.length, `wrist panel shows headset battery and updates on level/charging events (${res[0].t0} -> ${res[0].t1} -> ${res[0].t2})`);
+    ok(!res[1].api && res[1].t0 === 'Battery --' && !res[1].errs.length, 'no Battery API: wrist panel shows "Battery --" without errors');
+  }
   ok(loco.jump > 0.35, `push down + release launches a jump (+${loco.jump.toFixed(2)} m)`);
   const climb = await A.p.evaluate(() => {
     const r = {}; const g = MM.terrainH;
