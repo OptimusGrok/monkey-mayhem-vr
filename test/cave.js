@@ -161,6 +161,47 @@ const HELPERS = () => {
   ok(walk.walks.every(w => w.spawned && w.fallTimer && w.fallFor >= 1.99 && w.fallFor < 2.7 && w.worstHeld < 0.35), 'walking off the ledge / off each pillar (head moving room-scale; hands hanging, dragging on the floor or swinging; centre, sides, diagonal, sideways): nothing holds you up, you fall and respawn 2 s after your last footing (a hand sliding off the edge can add a moment) ' + JSON.stringify(walk.walks.map(w => [w.x, w.z0, w.handY, w.swing, w.spawned ? w.t : w.at, w.worstHeld, w.fallFor, w.fallTimer])));
   ok(walk.pushes.every(w => w.spawned ? w.fallTimer && w.worstHeld < 0.6 : w.at[2] > MM_LEDGE_Z - 0.3), 'gorilla arm-push runs at the edge: you either stop on the cave floor or fall and respawn; never stand on the chasm ' + JSON.stringify(walk.pushes.map(w => [w.yaw, w.spawned ? 'fell@' + w.t : w.at])));
   ok(walk.scan.hits === 0, `no invisible collider anywhere in the chasm (between and past the pillars) or in the cliff air: ${walk.scan.n} probe points, ${walk.scan.hits} hits`);
+  // ---------- 2e. gorilla arm locomotion on the REAL WebXR input path (readVR via scripted XRFrame/inputSources): controllers pushing on ground / walls move you ----------
+  const arm = await p.evaluate(() => {
+    const r = {}, CX = MM.CX, F = CX.F, J = MM.JUMP;
+    const btn = () => ({ pressed: false, touched: false, value: 0 });
+    const mk = hand => ({ handedness: hand, gripSpace: { hand }, targetRaySpace: {}, profiles: ['oculus-touch-v3'], gamepad: { mapping: 'xr-standard', buttons: [0, 1, 2, 3, 4, 5, 6].map(btn), axes: [0, 0, 0, 0], hapticActuators: [] } });
+    const Ls = mk('left'), Rs = mk('right'), S = { head: [0, 1.6, 0], hands: [[-0.27, 0.98, -0.2], [0.27, 0.98, -0.2]] };
+    const pose = p => ({ transform: { position: { x: p[0], y: p[1], z: p[2] }, orientation: { x: 0, y: 0, z: 0, w: 1 } } });
+    MM.fake = null; MM.xrSim = { ref: {}, session: { inputSources: [Ls, Rs] }, frame: { getViewerPose: () => pose(S.head), getPose: s => pose(S.hands[s.hand === 'left' ? 0 : 1]) } };
+    const set = (b, i, on) => { b.gamepad.buttons[i].pressed = on; b.gamepad.buttons[i].value = on ? 1 : 0; };
+    const rest = () => { S.hands = [[-0.27, 0.98, -0.2], [0.27, 0.98, -0.2]]; };
+    const settle = () => { rest(); let t = 0, still = 0; while (t < 4) { MM.step(1 / 72); t += 1 / 72; if (MM.PH.grounded && MM.PH.V.length() < 0.05) { if (++still > 20) break; } else still = 0; } };
+    // both controllers sweep down onto the ground, push back (front -> behind), lift and swing forward again: 2 s of strokes
+    const groundPush = () => { const h0 = C.head(); let anch = 0;
+      C.run(2.0, t => { const cyc = (t % 0.5) / 0.5, down = cyc < 0.45, off = down ? -0.45 + 0.9 * (cyc / 0.45) : 0.45 - 0.9 * ((cyc - 0.45) / 0.55), y = down ? 0.62 : 0.95; S.hands = [[-0.3, y, off], [0.3, y, off]]; if (MM.PH.anyAnch) anch++; });
+      const h1 = C.head(); settle(); return { moved: +(h0.z - h1.z).toFixed(2), sideways: +Math.abs(h1.x - h0.x).toFixed(2), anch }; };
+    // right controller on the tunnel wall at chest height, sweeping along it front -> behind; left hand hanging free
+    const wallPush = () => { const h0 = C.head(); let anch = 0;
+      C.run(2.0, t => { const cyc = (t % 0.5) / 0.5, on = cyc < 0.45, off = on ? -0.4 + 0.8 * (cyc / 0.45) : 0.4 - 0.8 * ((cyc - 0.45) / 0.55); S.hands = [[-0.25, 1.1, -0.1], [on ? 1.3 : 0.6, 1.3, off]]; if (MM.PH.anyAnch) anch++; });
+      const h1 = C.head(); settle(); return { moved: +(h0.z - h1.z).toFixed(2), anch }; };
+    const stand = (x, z, y) => { S.head = [0, 1.6, 0]; rest(); MM.place(x, y + 1.3, z); settle(); };
+    const gy = (x, z) => MM.terrainH(x, z);
+    stand(0, 4, gy(0, 4)); r.ground = groundPush();
+    stand(3, -40, F); r.cave = groundPush();
+    stand(3.6, -29, F); r.wall = wallPush();
+    // after a charged jump (1.2 s hold of A = right buttons[4])
+    stand(0, 8, gy(0, 8)); const n0 = J.count; set(Rs, 4, true); C.run(1.2); set(Rs, 4, false); settle(); r.jumped = J.count - n0; r.afterJump = groundPush();
+    stand(0, 14, gy(0, 14)); set(Rs, 4, true); C.run(3.2); set(Rs, 4, false); settle(); r.autoJumped = J.last.auto; r.afterAutoJump = groundPush();
+    // after opening and closing the Y menu (left buttons[5]); pushes while open do nothing
+    stand(0, 4, gy(0, 4)); set(Ls, 5, true); C.run(0.1); set(Ls, 5, false); C.run(0.1); r.menuOpened = MM.MENU.open; r.menuOpen = groundPush();
+    set(Ls, 5, true); C.run(0.1); set(Ls, 5, false); C.run(0.1); r.menuClosed = !MM.MENU.open; r.afterMenu = groundPush();
+    // after a respawn (walked off the ledge into the chasm, 2 s fall, back at spawn)
+    const s0 = C.spawns(); S.head = [0, 1.6, 0]; rest(); MM.place(3, F - 2, CX.ledgeZ - 1.2); let t = 0; while (C.spawns() === s0 && t < 5) { MM.step(1 / 72); t += 1 / 72; } r.respawned = C.spawns() > s0; settle(); r.afterRespawn = groundPush();
+    MM.xrSim = null; C.idle(0);
+    return r;
+  });
+  const armOk = m => m && m.moved > 1.5 && m.anch > 20;
+  ok(armOk(arm.ground) && armOk(arm.cave), `real WebXR input path: both controllers pushing back on the ground move you forward (jungle ${arm.ground.moved} m, big cave ${arm.cave.moved} m in 2 s of strokes)`);
+  ok(arm.wall.moved > 0.5 && arm.wall.anch > 10, `real WebXR input path: one controller pushing along the tunnel wall moves you (${arm.wall.moved} m)`);
+  ok(arm.jumped === 1 && arm.autoJumped && armOk(arm.afterJump) && armOk(arm.afterAutoJump), `arm movement still works after a charged jump and after the 3 s auto-jump (${arm.afterJump.moved} m / ${arm.afterAutoJump.moved} m)`);
+  ok(arm.menuOpened && arm.menuOpen.moved < 0.05 && arm.menuClosed && armOk(arm.afterMenu), `Y menu open: pushes do nothing (${arm.menuOpen.moved} m); after closing it arm movement works again (${arm.afterMenu.moved} m)`);
+  ok(arm.respawned && armOk(arm.afterRespawn), `after a fall + respawn arm movement works (${arm.afterRespawn.moved} m) ` + JSON.stringify(arm));
   // ---------- 3. falling = 2 s, then spawn ----------
   const fall = await p.evaluate(() => {
     const r = [], CX = MM.CX;

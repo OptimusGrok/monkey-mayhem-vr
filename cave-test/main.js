@@ -664,7 +664,7 @@ function readVR(frame) {
     const gp = frame.getPose(src.gripSpace, ref); if (!gp) continue;
     const p = gp.transform.position, o = gp.transform.orientation;
     inp.hands[i].p.set(p.x, p.y, p.z); inp.hands[i].q.set(o.x, o.y, o.z, o.w);
-    const b = src.gamepad && src.gamepad.buttons; inp.hands[i].grip = !!(b && b[1] && b[1].value > 0.5); inp.hands[i].stick = !!(b && b[3] && b[3].pressed); inp.hands[i].trig = !!(b && b[0] && b[0].value > 0.5); if (i === 1) inp.a = !!(b && b[4] && (b[4].pressed || b[4].value > 0.5)); else inp.y = !!(b && b[5] && (b[5].pressed || b[5].value > 0.5)); // xr-standard: [4] = A (right), [5] = Y (left) inp.hands[i].src = src; found[i] = true;
+    const b = src.gamepad && src.gamepad.buttons; inp.hands[i].grip = !!(b && b[1] && b[1].value > 0.5); inp.hands[i].stick = !!(b && b[3] && b[3].pressed); inp.hands[i].trig = !!(b && b[0] && b[0].value > 0.5); if (i === 1) inp.a = !!(b && b[4] && (b[4].pressed || b[4].value > 0.5)); else inp.y = !!(b && b[5] && (b[5].pressed || b[5].value > 0.5)); inp.hands[i].src = src; found[i] = true; // xr-standard: [4] = A (right), [5] = Y (left)
   }
   for (let i = 0; i < 2; i++) if (!found[i]) inp.hands[i].p.copy(inp.head).add(new V3(i ? 0.25 : -0.25, -0.7, -0.2));
   for (const h of inp.hands) h.p.y -= HAND_DROP; // virtual hand hangs a bit below the controller
